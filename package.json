@@ -1,0 +1,31 @@
+{
+  "name": "pi-async-prefix-compaction",
+  "version": "0.1.0",
+  "description": "Pi extension that precomputes compaction summaries in the background and applies them through session_before_compact.",
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "check": "bun --check src/*.ts",
+    "typecheck": "tsc --noEmit --strict --moduleResolution Bundler --module ESNext --target ES2022 --skipLibCheck --types node --types bun src/*.ts"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "compaction"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "@types/node": "^26.0.1",
+    "typescript": "^6.0.3"
+  }
+}
