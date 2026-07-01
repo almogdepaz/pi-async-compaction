@@ -2,9 +2,9 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CompactionResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { compact } from "@earendil-works/pi-coding-agent";
-import { InvalidationReason, SUMMARY_PROMPT_VERSION } from "./constants";
+import { EXTENSION_NAME, InvalidationReason, SUMMARY_PROMPT_VERSION } from "./constants";
 import { prepareAsyncCompaction } from "./preparation";
-import { markStale, nextJobId } from "./runtime-state";
+import { getAbortInvalidationReason, markStale, nextJobId } from "./runtime-state";
 import type { AsyncCompactionDetails, LocalCompactionPreparation, ReadyJob, ResolvedCompactionSettings, RuntimeState, Snapshot } from "./types";
 import { estimateAfterApply } from "./validation";
 import {
@@ -57,21 +57,79 @@ async function buildAsyncCompactionResult(
 	return compact(preparation, model, auth.apiKey, auth.headers, undefined, signal, thinkingLevel);
 }
 
-export function startAsyncJob(ctx: ExtensionContext, state: RuntimeState): void {
-	if (!isEnabled() || !ctx.model) return;
+export interface StartAsyncJobDependencies {
+	readonly buildAsyncCompactionResult: (
+		preparation: LocalCompactionPreparation,
+		model: Model<Api>,
+		ctx: ExtensionContext,
+		thinkingLevel: ThinkingLevel,
+		signal: AbortSignal,
+	) => Promise<CompactionResult>;
+	readonly getCompactionSettings: (ctx: ExtensionContext) => ResolvedCompactionSettings;
+	readonly getStartRatio: () => number;
+	readonly getTimeoutMs: () => number;
+	readonly isEnabled: () => boolean;
+	readonly setCliStatus: (ctx: ExtensionContext, text: string | undefined) => void;
+	readonly triggerCompaction: (ctx: ExtensionContext, onError: (error: Error) => void) => void;
+}
 
-	const usage = ctx.getContextUsage();
-	if (!usage || usage.tokens === null || usage.contextWindow <= 0) return;
+export interface StartAsyncJobOptions {
+	readonly force: boolean;
+	readonly timeoutMs?: number;
+}
 
-	const settings = getCompactionSettings(ctx);
+const defaultStartAsyncJobDependencies: StartAsyncJobDependencies = {
+	buildAsyncCompactionResult,
+	getCompactionSettings,
+	getStartRatio,
+	getTimeoutMs,
+	isEnabled,
+	setCliStatus: (ctx, text) => {
+		if (ctx.hasUI) ctx.ui.setStatus(EXTENSION_NAME, text);
+	},
+	triggerCompaction: (ctx, onError) => ctx.compact({ onError }),
+};
+
+export function startAsyncJob(ctx: ExtensionContext, state: RuntimeState, options: StartAsyncJobOptions = { force: false, timeoutMs: undefined }): void {
+	startAsyncJobWithDeps(ctx, state, defaultStartAsyncJobDependencies, options);
+}
+
+function recordApplyError(state: RuntimeState, jobId: string, error: Error): void {
+	if (state.status !== "ready" || state.jobId !== jobId) return;
+	state.status = "failed";
+	state.ready = undefined;
+	state.reason = InvalidationReason.FAILED;
+	state.error = `apply failed: ${error.message}`;
+}
+
+export function startAsyncJobWithDeps(
+	ctx: ExtensionContext,
+	state: RuntimeState,
+	deps: StartAsyncJobDependencies,
+	options: StartAsyncJobOptions = { force: false, timeoutMs: undefined },
+): void {
+	if (!deps.isEnabled() || !ctx.model) return;
+
+	const settings = deps.getCompactionSettings(ctx);
 	if (!settings.enabled) return;
 
-	const startThreshold = Math.floor(usage.contextWindow * getStartRatio());
-	const forceThreshold = usage.contextWindow - settings.reserveTokens;
-	if (usage.tokens <= startThreshold || usage.tokens > forceThreshold) return;
+	if (!options.force) {
+		const usage = ctx.getContextUsage();
+		if (!usage || usage.tokens === null || usage.contextWindow <= 0) return;
+
+		const startThreshold = Math.floor(usage.contextWindow * deps.getStartRatio());
+		const forceThreshold = usage.contextWindow - settings.reserveTokens;
+		if (usage.tokens <= startThreshold || usage.tokens > forceThreshold) return;
+	}
 
 	if (state.status === "pending") return;
-	if (state.status === "ready" && state.ready && !shouldReplaceReadyJob(state.ready, ctx, settings)) return;
+	if (state.status === "ready" && state.ready && !shouldReplaceReadyJob(state.ready, ctx, settings)) {
+		if (options.force) {
+			const readyJobId = state.ready.jobId;
+			deps.triggerCompaction(ctx, (error) => recordApplyError(state, readyJobId, error));
+		}
+		return;
+	}
 	if (state.status === "ready") {
 		markStale(state, InvalidationReason.SUPERSEDED);
 	}
@@ -93,6 +151,7 @@ export function startAsyncJob(ctx: ExtensionContext, state: RuntimeState): void 
 	state.ready = undefined;
 	state.reason = undefined;
 	state.error = undefined;
+	deps.setCliStatus(ctx, "async_compaction ...");
 
 	const model = ctx.model;
 	const thinkingLevel = getThinkingLevel(branch);
@@ -107,19 +166,28 @@ export function startAsyncJob(ctx: ExtensionContext, state: RuntimeState): void 
 		promptVersion: SUMMARY_PROMPT_VERSION,
 	};
 
-	const timeoutMs = getTimeoutMs();
-	const timeout = timeoutMs > 0 ? setTimeout(() => abortController.abort(), timeoutMs) : undefined;
+	const timeoutMs = options.timeoutMs ?? deps.getTimeoutMs();
+	let timedOut = false;
+	const timeout =
+		timeoutMs > 0
+			? setTimeout(() => {
+				timedOut = true;
+				abortController.abort();
+			}, timeoutMs)
+			: undefined;
 
-	void buildAsyncCompactionResult(preparation, model, ctx, thinkingLevel, abortController.signal)
+	void deps.buildAsyncCompactionResult(preparation, model, ctx, thinkingLevel, abortController.signal)
 		.then((result) => {
 			if (timeout) clearTimeout(timeout);
 			if (state.status !== "pending" || state.jobId !== jobId) return;
 			if (abortController.signal.aborted) {
-				markStale(state, InvalidationReason.CANCELLED);
+				markStale(state, getAbortInvalidationReason(timedOut));
+				deps.setCliStatus(ctx, undefined);
 				return;
 			}
 			if (!result.summary.trim()) {
 				markStale(state, InvalidationReason.FAILED);
+				deps.setCliStatus(ctx, undefined);
 				return;
 			}
 
@@ -145,6 +213,8 @@ export function startAsyncJob(ctx: ExtensionContext, state: RuntimeState): void 
 					} satisfies AsyncCompactionDetails,
 				},
 			};
+			deps.setCliStatus(ctx, undefined);
+			deps.triggerCompaction(ctx, (error) => recordApplyError(state, jobId, error));
 		})
 		.catch((error: unknown) => {
 			if (timeout) clearTimeout(timeout);
@@ -152,12 +222,14 @@ export function startAsyncJob(ctx: ExtensionContext, state: RuntimeState): void 
 			state.abortController = undefined;
 			if (abortController.signal.aborted) {
 				state.status = "stale";
-				state.reason = InvalidationReason.CANCELLED;
+				state.reason = getAbortInvalidationReason(timedOut);
 				state.error = undefined;
+				deps.setCliStatus(ctx, undefined);
 				return;
 			}
 			state.status = "failed";
 			state.reason = InvalidationReason.FAILED;
 			state.error = error instanceof Error ? error.message : String(error);
+			deps.setCliStatus(ctx, undefined);
 		});
 }

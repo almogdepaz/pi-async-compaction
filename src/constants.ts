@@ -1,13 +1,14 @@
 export const EXTENSION_NAME = "async-prefix-compaction";
 export const SUMMARY_PROMPT_VERSION = "pi-compact-background-v1";
 export const DEFAULT_START_RATIO = 0.8;
-export const DEFAULT_TIMEOUT_MS = 60_000;
+export const DEFAULT_TIMEOUT_MS = 300_000;
 
 export const InvalidationReason = {
 	FIRST_KEPT_MISSING: "first_kept_missing",
 	FIRST_KEPT_TOOL_RESULT: "first_kept_tool_result",
 	SNAPSHOT_LEAF_MISSING: "snapshot_leaf_missing",
 	FIRST_KEPT_AFTER_SNAPSHOT: "first_kept_after_snapshot",
+	FIRST_KEPT_MISMATCH: "first_kept_mismatch",
 	MODEL_CHANGED: "model_changed",
 	SESSION_CHANGED: "session_changed",
 	THINKING_CHANGED: "thinking_changed",
@@ -17,6 +18,7 @@ export const InvalidationReason = {
 	SUPERSEDED: "superseded",
 	SYNC_FALLBACK: "sync_fallback",
 	CANCELLED: "cancelled",
+	TIMEOUT: "timeout",
 	FAILED: "failed",
 } as const;
 

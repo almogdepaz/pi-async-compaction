@@ -1,9 +1,8 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext, findCutPoint, getLatestCompactionEntry } from "@earendil-works/pi-coding-agent";
-import { SUMMARY_PROMPT_VERSION } from "./constants";
 import type { FileOperations, LocalCompactionPreparation, ResolvedCompactionSettings } from "./types";
-import { estimateMessagesTokens, getStringArrayProperty } from "./utils";
+import { estimateContextUsageTokens, getStringArrayProperty, hasAsyncCompactionMarker } from "./utils";
 
 function createFileOps(): FileOperations {
 	return {
@@ -11,13 +10,6 @@ function createFileOps(): FileOperations {
 		written: new Set<string>(),
 		edited: new Set<string>(),
 	};
-}
-
-function hasOwnAsyncCompactionMarker(value: unknown): boolean {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-	const marker = (value as Record<string, unknown>).asyncPrefixCompaction;
-	if (!marker || typeof marker !== "object" || Array.isArray(marker)) return false;
-	return (marker as Record<string, unknown>).promptVersion === SUMMARY_PROMPT_VERSION;
 }
 
 function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOperations): void {
@@ -105,9 +97,13 @@ export function prepareAsyncCompaction(
 		}
 	}
 
+	if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) {
+		return undefined;
+	}
+
 	const fileOps = createFileOps();
 	const shouldInheritCompactionDetails =
-		latestCompaction && (!latestCompaction.fromHook || hasOwnAsyncCompactionMarker(latestCompaction.details));
+		latestCompaction && (!latestCompaction.fromHook || hasAsyncCompactionMarker(latestCompaction.details));
 	if (shouldInheritCompactionDetails) {
 		for (const file of getStringArrayProperty(latestCompaction.details, "readFiles")) {
 			fileOps.read.add(file);
@@ -125,7 +121,7 @@ export function prepareAsyncCompaction(
 		messagesToSummarize,
 		turnPrefixMessages,
 		isSplitTurn: cutPoint.isSplitTurn,
-		tokensBefore: estimateMessagesTokens(buildSessionContext([...pathEntries]).messages),
+		tokensBefore: estimateContextUsageTokens(buildSessionContext([...pathEntries]).messages),
 		previousSummary,
 		fileOps,
 		settings,

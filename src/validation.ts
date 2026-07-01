@@ -42,6 +42,9 @@ export function validateReadyJob(
 	if (job.settingsKey !== settingsKey(event.preparation.settings)) {
 		return InvalidationReason.SETTINGS_CHANGED;
 	}
+	if (job.result.firstKeptEntryId !== job.firstKeptEntryId) {
+		return InvalidationReason.FIRST_KEPT_MISMATCH;
+	}
 
 	const currentPath = ctx.sessionManager.getBranch();
 	if (job.thinkingLevel !== getThinkingLevel(currentPath)) {

@@ -1,6 +1,11 @@
-import { EXTENSION_NAME } from "./constants";
-import type { InvalidationReason } from "./constants";
+import { EXTENSION_NAME, InvalidationReason } from "./constants";
 import type { RuntimeState } from "./types";
+
+export interface RuntimeStatusOptions {
+	readonly enabled: boolean;
+	readonly startRatio: number;
+	readonly timeoutMs: number;
+}
 
 export function createRuntimeState(): RuntimeState {
 	return {
@@ -11,6 +16,7 @@ export function createRuntimeState(): RuntimeState {
 		error: undefined,
 		abortController: undefined,
 		jobCounter: 0,
+		lastAppliedJobId: undefined,
 	};
 }
 
@@ -25,4 +31,21 @@ export function markStale(state: RuntimeState, reason: InvalidationReason): void
 	state.status = "stale";
 	state.ready = undefined;
 	state.reason = reason;
+}
+
+export function getAbortInvalidationReason(timedOut: boolean): InvalidationReason {
+	return timedOut ? InvalidationReason.TIMEOUT : InvalidationReason.CANCELLED;
+}
+
+export function formatRuntimeStatus(state: RuntimeState, options: RuntimeStatusOptions): string {
+	return [
+		`status: ${state.status}`,
+		`job: ${state.jobId ?? "none"}`,
+		`lastApplied: ${state.lastAppliedJobId ?? "none"}`,
+		`reason: ${state.reason ?? "none"}`,
+		`error: ${state.error ?? "none"}`,
+		`enabled: ${options.enabled}`,
+		`startRatio: ${options.startRatio}`,
+		`timeoutMs: ${options.timeoutMs}`,
+	].join("\n");
 }
