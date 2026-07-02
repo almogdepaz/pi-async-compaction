@@ -1,6 +1,6 @@
 # fix review findings one by one
 
-status: in progress
+status: completed
 
 ## finding 1 — async-after-async file-op inheritance
 - severity: high
@@ -49,3 +49,6 @@ status: in progress
 
 ## remaining findings
 - none
+
+## closure note
+- Historical status corrected on 2026-07-02 after reconciling all review artifacts in `.plans/010-review-artifact-closure.md`.

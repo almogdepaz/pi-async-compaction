@@ -1,6 +1,6 @@
 # async compaction: reuse pi compaction
 
-status: implemented; awaiting user verification
+status: completed and verified
 
 ## goal
 make async compaction use Pi's built-in compaction generation so output quality matches sync compaction, while applying only if the current branch can safely append the raw tail from the snapshotted `firstKeptEntryId`.
@@ -16,5 +16,6 @@ make async compaction use Pi's built-in compaction generation so output quality 
 - [x] verify type/runtime constraints possible in this repo
 
 ## notes
-- no local test harness exists.
+- local tests now cover preparation parity, lifecycle behavior, validation, and post-apply raw-tail reconstruction.
 - `prepareCompaction()` is present internally in Pi but not exported from `@earendil-works/pi-coding-agent`; if Pi exports it later, the local mirrored preparation should be deleted.
+- 2026-07-02 verification: default suite, typecheck/check, opt-in real fixture parity, and live no-gap context inspection passed.
