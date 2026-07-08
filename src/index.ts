@@ -42,29 +42,26 @@ export default function asyncPrefixCompaction(pi: ExtensionAPI, deps: AsyncPrefi
 		if (ctx.hasUI) ctx.ui.setToolsExpanded(false);
 	}
 
+	function invalidateActiveJob(ctx: ExtensionContext, reason: InvalidationReason): void {
+		if (state.status !== "pending" && state.status !== "ready") return;
+		markStale(state, reason);
+		clearCliStatus(ctx);
+	}
+
 	pi.on("turn_end", (_event, ctx) => {
 		deps.startAsyncJob(ctx, state);
 	});
 
 	pi.on("model_select", (_event, ctx) => {
-		if (state.status === "pending" || state.status === "ready") {
-			markStale(state, InvalidationReason.MODEL_CHANGED);
-			clearCliStatus(ctx);
-		}
+		invalidateActiveJob(ctx, InvalidationReason.MODEL_CHANGED);
 	});
 
 	pi.on("thinking_level_select", (_event, ctx) => {
-		if (state.status === "pending" || state.status === "ready") {
-			markStale(state, InvalidationReason.THINKING_CHANGED);
-			clearCliStatus(ctx);
-		}
+		invalidateActiveJob(ctx, InvalidationReason.THINKING_CHANGED);
 	});
 
 	pi.on("session_tree", (_event, ctx) => {
-		if (state.status === "pending" || state.status === "ready") {
-			markStale(state, InvalidationReason.SNAPSHOT_LEAF_MISSING);
-			clearCliStatus(ctx);
-		}
+		invalidateActiveJob(ctx, InvalidationReason.SNAPSHOT_LEAF_MISSING);
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {

@@ -6,7 +6,7 @@ import { EXTENSION_NAME, InvalidationReason, SUMMARY_PROMPT_VERSION } from "./co
 import { prepareAsyncCompaction } from "./preparation";
 import { getAbortInvalidationReason, markStale, nextJobId } from "./runtime-state";
 import type { AsyncCompactionDetails, LocalCompactionPreparation, ReadyJob, ResolvedCompactionSettings, RuntimeState, Snapshot } from "./types";
-import { estimateAfterApply } from "./validation";
+import { getReadyJobContextInvalidationReason } from "./validation";
 import {
 	getCompactionSettings,
 	getStartRatio,
@@ -19,26 +19,7 @@ import {
 } from "./utils";
 
 function shouldReplaceReadyJob(ready: ReadyJob, ctx: ExtensionContext, settings: ResolvedCompactionSettings): boolean {
-	// Keep session/model/thinking/settings checks aligned with validateReadyJob.
-	const currentPath = ctx.sessionManager.getBranch();
-	if (ready.sessionId !== ctx.sessionManager.getSessionId()) {
-		return true;
-	}
-	if (!ctx.model || ready.modelKey !== modelKey(ctx.model)) {
-		return true;
-	}
-	if (ready.thinkingLevel !== getThinkingLevel(currentPath)) {
-		return true;
-	}
-	if (ready.settingsKey !== settingsKey(settings)) {
-		return true;
-	}
-	if (ctx.sessionManager.getLeafId() === ready.snapshotLeafId) {
-		return false;
-	}
-
-	const maxAfter = (ctx.model.contextWindow ?? 0) - settings.reserveTokens;
-	return maxAfter > 0 && estimateAfterApply(ready, currentPath) > maxAfter;
+	return getReadyJobContextInvalidationReason(ready, ctx, settings) !== undefined;
 }
 
 async function buildAsyncCompactionResult(
@@ -59,6 +40,8 @@ async function buildAsyncCompactionResult(
 	return compact(preparation, model, auth.apiKey, auth.headers, undefined, signal, thinkingLevel);
 }
 
+type TimeoutHandle = ReturnType<typeof setTimeout>;
+
 interface StartAsyncJobDependencies {
 	readonly buildAsyncCompactionResult: (
 		preparation: LocalCompactionPreparation,
@@ -72,6 +55,8 @@ interface StartAsyncJobDependencies {
 	readonly getTimeoutMs: () => number;
 	readonly isEnabled: () => boolean;
 	readonly setCliStatus: (ctx: ExtensionContext, text: string | undefined) => void;
+	readonly setTimeout: (handler: () => void, timeoutMs: number) => TimeoutHandle;
+	readonly clearTimeout: (timeout: TimeoutHandle) => void;
 	readonly triggerCompaction: (ctx: ExtensionContext, onError: (error: Error) => void) => void;
 }
 
@@ -102,6 +87,8 @@ const defaultStartAsyncJobDependencies: StartAsyncJobDependencies = {
 	setCliStatus: (ctx, text) => {
 		if (ctx.hasUI) ctx.ui.setStatus(EXTENSION_NAME, text);
 	},
+	setTimeout,
+	clearTimeout,
 	triggerCompaction: (ctx, onError) => ctx.compact({ onError }),
 };
 
@@ -124,6 +111,117 @@ function recordApplyError(state: RuntimeState, jobId: string, error: Error): voi
 	state.lastHandedOffJobId = undefined;
 }
 
+function recordBackgroundFailure(state: RuntimeState, error: unknown): void {
+	state.status = "failed";
+	state.reason = InvalidationReason.FAILED;
+	state.error = error instanceof Error ? error.message : String(error);
+}
+
+function recordEmptySummaryFailure(state: RuntimeState): void {
+	state.abortController = undefined;
+	state.status = "failed";
+	state.ready = undefined;
+	state.reason = InvalidationReason.FAILED;
+	state.error = "empty compaction summary";
+}
+
+function storeReadyResult(
+	state: RuntimeState,
+	snapshot: Snapshot,
+	result: CompactionResult,
+	thinkingLevel: ThinkingLevel,
+): void {
+	const piDetails = result.details && typeof result.details === "object" && !Array.isArray(result.details) ? result.details : {};
+
+	state.abortController = undefined;
+	state.status = "ready";
+	state.ready = {
+		...snapshot,
+		result: {
+			...result,
+			details: {
+				...piDetails,
+				asyncPrefixCompaction: {
+					jobId: snapshot.jobId,
+					snapshotLeafId: snapshot.snapshotLeafId,
+					modelKey: snapshot.modelKey,
+					thinkingLevel,
+					settingsKey: snapshot.settingsKey,
+					promptVersion: SUMMARY_PROMPT_VERSION,
+				},
+			} satisfies AsyncCompactionDetails,
+		},
+	};
+}
+
+function scheduleTimeout(
+	deps: StartAsyncJobDependencies,
+	ctx: ExtensionContext,
+	state: RuntimeState,
+	jobId: string,
+	abortController: AbortController,
+	timeoutMs: number,
+	onTimeout: () => void,
+): TimeoutHandle | undefined {
+	if (timeoutMs <= 0) return undefined;
+	return deps.setTimeout(() => {
+		onTimeout();
+		abortController.abort();
+		if (state.status !== "pending" || state.jobId !== jobId) return;
+		markStale(state, InvalidationReason.TIMEOUT);
+		deps.setCliStatus(ctx, undefined);
+	}, timeoutMs);
+}
+
+function getAutomaticStartBlocker(
+	ctx: ExtensionContext,
+	deps: StartAsyncJobDependencies,
+	settings: ResolvedCompactionSettings,
+): StartAsyncJobOutcome | undefined {
+	const usage = ctx.getContextUsage();
+	if (!usage || usage.tokens === null || usage.contextWindow <= 0) return "context_unknown";
+
+	// Pi's shouldCompact checks the final trigger threshold; async starts earlier and must keep its own window.
+	const startWindow = getStartWindow(usage.contextWindow, deps.getStartRatio(), settings.reserveTokens);
+	if (startWindow.kind === "unknown") return "context_unknown";
+	if (startWindow.kind === "empty") return "start_window_empty";
+	if (usage.tokens <= startWindow.startThreshold) return "below_threshold";
+	if (usage.tokens > startWindow.forceThreshold) return "above_force_threshold";
+	return undefined;
+}
+
+function markPending(state: RuntimeState, jobId: string, abortController: AbortController): void {
+	state.abortController?.abort();
+	state.abortController = abortController;
+	state.status = "pending";
+	state.jobId = jobId;
+	state.ready = undefined;
+	state.reason = undefined;
+	state.error = undefined;
+	state.lastHandedOffJobId = undefined;
+}
+
+function createSnapshot(
+	ctx: ExtensionContext,
+	jobId: string,
+	snapshotLeafId: string,
+	preparation: LocalCompactionPreparation,
+	model: Model<Api>,
+	thinkingLevel: ThinkingLevel,
+	settings: ResolvedCompactionSettings,
+): Snapshot {
+	return {
+		jobId,
+		sessionId: ctx.sessionManager.getSessionId(),
+		snapshotLeafId,
+		firstKeptEntryId: preparation.firstKeptEntryId,
+		modelKey: modelKey(model),
+		thinkingLevel,
+		settingsKey: settingsKey(settings),
+		promptVersion: SUMMARY_PROMPT_VERSION,
+	};
+}
+
 export function startAsyncJobWithDeps(
 	ctx: ExtensionContext,
 	state: RuntimeState,
@@ -137,15 +235,8 @@ export function startAsyncJobWithDeps(
 	if (!settings.enabled) return "settings_disabled";
 
 	if (!options.force) {
-		const usage = ctx.getContextUsage();
-		if (!usage || usage.tokens === null || usage.contextWindow <= 0) return "context_unknown";
-
-		// Pi's shouldCompact checks the final trigger threshold; async starts earlier and must keep its own window.
-		const startWindow = getStartWindow(usage.contextWindow, deps.getStartRatio(), settings.reserveTokens);
-		if (startWindow.kind === "unknown") return "context_unknown";
-		if (startWindow.kind === "empty") return "start_window_empty";
-		if (usage.tokens <= startWindow.startThreshold) return "below_threshold";
-		if (usage.tokens > startWindow.forceThreshold) return "above_force_threshold";
+		const blocker = getAutomaticStartBlocker(ctx, deps, settings);
+		if (blocker) return blocker;
 	}
 
 	if (state.status === "pending") return "already_pending";
@@ -168,47 +259,23 @@ export function startAsyncJobWithDeps(
 	if (!snapshotLeafId) return "nothing_to_compact";
 
 	const jobId = nextJobId(state);
-	state.abortController?.abort();
 	const abortController = new AbortController();
-	state.abortController = abortController;
-
-	state.status = "pending";
-	state.jobId = jobId;
-	state.ready = undefined;
-	state.reason = undefined;
-	state.error = undefined;
-	state.lastHandedOffJobId = undefined;
+	markPending(state, jobId, abortController);
 	deps.setCliStatus(ctx, "async_compaction ...");
 
 	const model = ctx.model;
 	const thinkingLevel = getThinkingLevel(branch);
-	const snapshot: Snapshot = {
-		jobId,
-		sessionId: ctx.sessionManager.getSessionId(),
-		snapshotLeafId,
-		firstKeptEntryId: preparation.firstKeptEntryId,
-		modelKey: modelKey(model),
-		thinkingLevel,
-		settingsKey: settingsKey(settings),
-		promptVersion: SUMMARY_PROMPT_VERSION,
-	};
+	const snapshot = createSnapshot(ctx, jobId, snapshotLeafId, preparation, model, thinkingLevel, settings);
 
 	const timeoutMs = options.timeoutMs ?? deps.getTimeoutMs();
 	let timedOut = false;
-	const timeout =
-		timeoutMs > 0
-			? setTimeout(() => {
-				timedOut = true;
-				abortController.abort();
-				if (state.status !== "pending" || state.jobId !== jobId) return;
-				markStale(state, InvalidationReason.TIMEOUT);
-				deps.setCliStatus(ctx, undefined);
-			}, timeoutMs)
-			: undefined;
+	const timeout = scheduleTimeout(deps, ctx, state, jobId, abortController, timeoutMs, () => {
+		timedOut = true;
+	});
 
 	void deps.buildAsyncCompactionResult(preparation, model, ctx, thinkingLevel, abortController.signal)
 		.then((result) => {
-			if (timeout) clearTimeout(timeout);
+			if (timeout) deps.clearTimeout(timeout);
 			if (state.status !== "pending" || state.jobId !== jobId) return;
 			if (abortController.signal.aborted) {
 				markStale(state, getAbortInvalidationReason(timedOut));
@@ -216,42 +283,17 @@ export function startAsyncJobWithDeps(
 				return;
 			}
 			if (!result.summary.trim()) {
-				state.abortController = undefined;
-				state.status = "failed";
-				state.ready = undefined;
-				state.reason = InvalidationReason.FAILED;
-				state.error = "empty compaction summary";
+				recordEmptySummaryFailure(state);
 				deps.setCliStatus(ctx, undefined);
 				return;
 			}
 
-			const piDetails =
-				result.details && typeof result.details === "object" && !Array.isArray(result.details) ? result.details : {};
-
-			state.abortController = undefined;
-			state.status = "ready";
-			state.ready = {
-				...snapshot,
-				result: {
-					...result,
-					details: {
-						...piDetails,
-						asyncPrefixCompaction: {
-							jobId,
-							snapshotLeafId,
-							modelKey: snapshot.modelKey,
-							thinkingLevel,
-							settingsKey: snapshot.settingsKey,
-							promptVersion: SUMMARY_PROMPT_VERSION,
-						},
-					} satisfies AsyncCompactionDetails,
-				},
-			};
+			storeReadyResult(state, snapshot, result, thinkingLevel);
 			deps.setCliStatus(ctx, undefined);
 			deps.triggerCompaction(ctx, (error) => recordApplyError(state, jobId, error));
 		})
 		.catch((error: unknown) => {
-			if (timeout) clearTimeout(timeout);
+			if (timeout) deps.clearTimeout(timeout);
 			if (state.status !== "pending" || state.jobId !== jobId) return;
 			state.abortController = undefined;
 			if (abortController.signal.aborted) {
@@ -261,9 +303,7 @@ export function startAsyncJobWithDeps(
 				deps.setCliStatus(ctx, undefined);
 				return;
 			}
-			state.status = "failed";
-			state.reason = InvalidationReason.FAILED;
-			state.error = error instanceof Error ? error.message : String(error);
+			recordBackgroundFailure(state, error);
 			deps.setCliStatus(ctx, undefined);
 		});
 	return "started";
