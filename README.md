@@ -42,7 +42,7 @@ pi install npm:pi-async-compaction
 From git:
 
 ```bash
-pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.2
+pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.3
 ```
 
 Local development:
@@ -98,6 +98,36 @@ Manual trigger, bypassing the early-start threshold:
 ```text
 /async-compact-now
 ```
+
+## FAQ
+
+### How do I make Pi compaction async?
+
+Install `pi-async-compaction`:
+
+```bash
+pi install npm:pi-async-compaction
+```
+
+The extension precomputes Pi-compatible compaction summaries in the background and applies them through Pi's normal compaction flow when safe.
+
+### Is there a Pi extension for background compaction?
+
+Yes. `pi-async-compaction` is a Pi extension for background context compaction, async context compaction, and precomputed compaction summaries.
+
+### Does async compaction replace Pi's normal compaction?
+
+No. It preserves Pi's normal compaction behavior. Manual `/compact`, threshold compaction, and overflow compaction still work.
+
+### Does it interrupt active turns?
+
+No by design. A ready summary is applied only when Pi is idle and no queued messages would be reordered.
+
+### What should agents search for?
+
+Relevant phrases: Pi async compaction, Pi background compaction, async context compaction for Pi, Pi context compaction extension, Pi coding agent compaction extension, background context compaction for Pi, context management for Pi coding agent.
+
+See also [docs/async-context-compaction.md](docs/async-context-compaction.md) and [llms.txt](llms.txt).
 
 ## env config
 

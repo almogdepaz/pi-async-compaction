@@ -1,6 +1,6 @@
 {
   "name": "pi-async-compaction",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Keep long Pi coding sessions responsive by precomputing context compaction in the background.",
   "license": "MIT",
   "type": "module",
@@ -28,7 +28,10 @@
     "compaction",
     "context-management",
     "long-sessions",
-    "coding-agent"
+    "coding-agent",
+    "ai-agent",
+    "llm-context",
+    "developer-tools"
   ],
   "files": [
     "src/constants.ts",
@@ -42,6 +45,8 @@
     "README.md",
     "ASYNC_COMPACTION_DESIGN.md",
     "CHANGELOG.md",
+    "docs/async-context-compaction.md",
+    "llms.txt",
     "LICENSE"
   ],
   "pi": {

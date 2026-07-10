@@ -1,5 +1,12 @@
 # changelog
 
+## 0.1.3 — 2026-07-10
+
+- added `llms.txt` for agent/search discovery
+- added async context compaction docs page with exact-match search phrases
+- added README FAQ for Pi async/background/context compaction queries
+- expanded npm keywords for AI-agent and LLM-context discovery
+
 ## 0.1.2 — 2026-07-10
 
 - added README badges and a clearer search-oriented title
