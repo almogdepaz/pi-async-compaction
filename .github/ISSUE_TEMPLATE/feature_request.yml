@@ -1,0 +1,24 @@
+name: feature request
+description: suggest an improvement for async compaction
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: problem
+      description: what workflow or pain point should this improve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: proposal
+      description: what should the extension do differently?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: alternatives considered
+      description: optional; include any workarounds or tradeoffs.

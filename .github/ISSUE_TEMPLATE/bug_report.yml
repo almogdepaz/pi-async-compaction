@@ -1,0 +1,36 @@
+name: bug report
+description: report async compaction behavior that is broken or surprising
+title: "bug: "
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: what happened?
+      description: describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+  - type: input
+    id: pi-version
+    attributes:
+      label: pi version
+      placeholder: "pi --version"
+    validations:
+      required: true
+  - type: input
+    id: package-version
+    attributes:
+      label: pi-async-compaction version
+      placeholder: "pi list"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: relevant logs or terminal output
+      render: text
+  - type: textarea
+    id: context
+    attributes:
+      label: context
+      description: model, approximate context size, whether messages were queued, and whether escape/cancel was involved.
