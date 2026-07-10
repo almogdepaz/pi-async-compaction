@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { CompactionResult, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
-import { startAsyncJobWithDeps } from "../src/job";
+import { applyReadyCompaction, startAsyncJobWithDeps } from "../src/job";
 import {
 	assistantEntry,
 	asyncJobContext,
@@ -99,6 +99,69 @@ describe("extension hooks", () => {
 		expect(notifyMessages).toEqual([]);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(notifyMessages).toEqual(["Applied ready async prefix compaction"]);
+	});
+
+	test("applies a ready async compaction at safe agent end", async () => {
+		let compactTriggered = 0;
+		const deps = asyncJobDeps({ triggerCompaction: (jobCtx) => jobCtx.compact() });
+		const { handlers } = extensionHarness({
+			applyReadyCompaction: (jobCtx, state) => applyReadyCompaction(jobCtx, state, deps),
+			startAsyncJob: (jobCtx, state, options) => startAsyncJobWithDeps(jobCtx, state, deps, options),
+		});
+		const turnEndHandler = handlers.get("turn_end");
+		const agentEndHandler = handlers.get("agent_end");
+		if (!turnEndHandler) throw new Error("turn_end handler was not registered");
+		if (!agentEndHandler) throw new Error("agent_end handler was not registered");
+
+		const entries = compactableEntries();
+		turnEndHandler({}, {
+			...asyncJobContext(entries),
+			isIdle: () => false,
+			hasPendingMessages: () => false,
+			compact: () => compactTriggered++,
+		} as ExtensionContext);
+		await Promise.resolve();
+		expect(compactTriggered).toBe(0);
+
+		agentEndHandler({}, {
+			...asyncJobContext(entries),
+			isIdle: () => true,
+			hasPendingMessages: () => false,
+			compact: () => compactTriggered++,
+		} as ExtensionContext);
+
+		expect(compactTriggered).toBe(1);
+	});
+
+	test("defers ready async compaction at agent end when queued messages are pending", async () => {
+		let compactTriggered = 0;
+		const deps = asyncJobDeps({ triggerCompaction: (jobCtx) => jobCtx.compact() });
+		const { handlers } = extensionHarness({
+			applyReadyCompaction: (jobCtx, state) => applyReadyCompaction(jobCtx, state, deps),
+			startAsyncJob: (jobCtx, state, options) => startAsyncJobWithDeps(jobCtx, state, deps, options),
+		});
+		const turnEndHandler = handlers.get("turn_end");
+		const agentEndHandler = handlers.get("agent_end");
+		if (!turnEndHandler) throw new Error("turn_end handler was not registered");
+		if (!agentEndHandler) throw new Error("agent_end handler was not registered");
+
+		const entries = compactableEntries();
+		turnEndHandler({}, {
+			...asyncJobContext(entries),
+			isIdle: () => false,
+			hasPendingMessages: () => false,
+			compact: () => compactTriggered++,
+		} as ExtensionContext);
+		await Promise.resolve();
+
+		agentEndHandler({}, {
+			...asyncJobContext(entries),
+			isIdle: () => true,
+			hasPendingMessages: () => true,
+			compact: () => compactTriggered++,
+		} as ExtensionContext);
+
+		expect(compactTriggered).toBe(0);
 	});
 
 	test("collapses Pi compaction summary before handing off a ready job", async () => {

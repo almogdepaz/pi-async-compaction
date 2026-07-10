@@ -74,6 +74,8 @@ export function asyncJobContext(entries: readonly SessionEntry[], usageTokens = 
 	return {
 		cwd: process.cwd(),
 		model: testModel(contextWindow),
+		isIdle: () => true,
+		hasPendingMessages: () => false,
 		getContextUsage: () => ({ tokens: usageTokens, contextWindow }),
 		sessionManager: {
 			getSessionId: () => "session-1",

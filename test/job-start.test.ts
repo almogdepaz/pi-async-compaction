@@ -91,18 +91,60 @@ describe("startAsyncJob lifecycle", () => {
 		expect(statusValues).toEqual(["async_compaction ...", undefined]);
 	});
 
-	test("triggers Pi compaction when a background job becomes ready", async () => {
+	test("triggers Pi compaction when a background job becomes ready while idle", async () => {
 		const state = createRuntimeState();
 		let compactTriggered = 0;
 
 		startAsyncJobWithDeps(
-			asyncJobContext(compactableEntries()),
+			{
+				...asyncJobContext(compactableEntries()),
+				isIdle: () => true,
+				hasPendingMessages: () => false,
+			},
 			state,
 			asyncJobDeps({ triggerCompaction: () => compactTriggered++ }),
 		);
 		await Promise.resolve();
 
 		expect(compactTriggered).toBe(1);
+	});
+
+	test("does not trigger Pi compaction when a background job becomes ready during an active turn", async () => {
+		const state = createRuntimeState();
+		let compactTriggered = 0;
+
+		startAsyncJobWithDeps(
+			{
+				...asyncJobContext(compactableEntries()),
+				isIdle: () => false,
+				hasPendingMessages: () => false,
+			},
+			state,
+			asyncJobDeps({ triggerCompaction: () => compactTriggered++ }),
+		);
+		await Promise.resolve();
+
+		expect(state.status).toBe("ready");
+		expect(compactTriggered).toBe(0);
+	});
+
+	test("does not trigger Pi compaction when queued messages are pending", async () => {
+		const state = createRuntimeState();
+		let compactTriggered = 0;
+
+		startAsyncJobWithDeps(
+			{
+				...asyncJobContext(compactableEntries()),
+				isIdle: () => true,
+				hasPendingMessages: () => true,
+			},
+			state,
+			asyncJobDeps({ triggerCompaction: () => compactTriggered++ }),
+		);
+		await Promise.resolve();
+
+		expect(state.status).toBe("ready");
+		expect(compactTriggered).toBe(0);
 	});
 
 	test("manual force triggers Pi compaction when a reusable ready job already exists", () => {

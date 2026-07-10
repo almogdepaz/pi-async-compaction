@@ -1,20 +1,23 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { EXTENSION_NAME, InvalidationReason } from "./constants";
-import { startAsyncJob } from "./job";
+import { applyReadyCompaction, startAsyncJob } from "./job";
 import type { StartAsyncJobOutcome } from "./job";
 import { createRuntimeState, markStale } from "./runtime-state";
 import { getAsyncCompactionMarker } from "./utils";
 import { validateReadyJob } from "./validation";
 
 interface AsyncPrefixCompactionDependencies {
+	readonly applyReadyCompaction: typeof applyReadyCompaction;
 	readonly startAsyncJob: typeof startAsyncJob;
 }
 
 const defaultDependencies: AsyncPrefixCompactionDependencies = {
+	applyReadyCompaction,
 	startAsyncJob,
 };
 
-export default function asyncPrefixCompaction(pi: ExtensionAPI, deps: AsyncPrefixCompactionDependencies = defaultDependencies) {
+export default function asyncPrefixCompaction(pi: ExtensionAPI, injectedDeps: Partial<AsyncPrefixCompactionDependencies> = {}) {
+	const deps = { ...defaultDependencies, ...injectedDeps };
 	const state = createRuntimeState();
 
 	function clearCliStatus(ctx: ExtensionContext): void {
@@ -50,6 +53,10 @@ export default function asyncPrefixCompaction(pi: ExtensionAPI, deps: AsyncPrefi
 
 	pi.on("turn_end", (_event, ctx) => {
 		deps.startAsyncJob(ctx, state);
+	});
+
+	pi.on("agent_end", (_event, ctx) => {
+		deps.applyReadyCompaction(ctx, state);
 	});
 
 	pi.on("model_select", (_event, ctx) => {

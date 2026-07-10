@@ -22,6 +22,10 @@ function shouldReplaceReadyJob(ready: ReadyJob, ctx: ExtensionContext, settings:
 	return getReadyJobContextInvalidationReason(ready, ctx, settings) !== undefined;
 }
 
+function canApplyReadyCompaction(ctx: ExtensionContext): boolean {
+	return ctx.isIdle() && !ctx.hasPendingMessages();
+}
+
 async function buildAsyncCompactionResult(
 	preparation: LocalCompactionPreparation,
 	model: Model<Api>,
@@ -98,6 +102,27 @@ export function startAsyncJob(
 	options: StartAsyncJobOptions = { force: false, timeoutMs: undefined },
 ): StartAsyncJobOutcome {
 	return startAsyncJobWithDeps(ctx, state, defaultStartAsyncJobDependencies, options);
+}
+
+export function applyReadyCompaction(
+	ctx: ExtensionContext,
+	state: RuntimeState,
+	deps: StartAsyncJobDependencies = defaultStartAsyncJobDependencies,
+): boolean {
+	if (state.status !== "ready" || !state.ready) return false;
+	if (shouldReplaceReadyJob(state.ready, ctx, deps.getCompactionSettings(ctx))) {
+		markStale(state, InvalidationReason.SUPERSEDED);
+		deps.setCliStatus(ctx, undefined);
+		return false;
+	}
+	if (!canApplyReadyCompaction(ctx)) {
+		deps.setCliStatus(ctx, "async_compaction ready");
+		return false;
+	}
+	const readyJobId = state.ready.jobId;
+	deps.setCliStatus(ctx, undefined);
+	deps.triggerCompaction(ctx, (error) => recordApplyError(state, readyJobId, error));
+	return true;
 }
 
 function recordApplyError(state: RuntimeState, jobId: string, error: Error): void {
@@ -241,10 +266,7 @@ export function startAsyncJobWithDeps(
 
 	if (state.status === "pending") return "already_pending";
 	if (state.status === "ready" && state.ready && !shouldReplaceReadyJob(state.ready, ctx, settings)) {
-		if (options.force) {
-			const readyJobId = state.ready.jobId;
-			deps.triggerCompaction(ctx, (error) => recordApplyError(state, readyJobId, error));
-		}
+		if (options.force) applyReadyCompaction(ctx, state, deps);
 		return "ready_reused";
 	}
 	if (state.status === "ready") {
@@ -289,8 +311,7 @@ export function startAsyncJobWithDeps(
 			}
 
 			storeReadyResult(state, snapshot, result, thinkingLevel);
-			deps.setCliStatus(ctx, undefined);
-			deps.triggerCompaction(ctx, (error) => recordApplyError(state, jobId, error));
+			applyReadyCompaction(ctx, state, deps);
 		})
 		.catch((error: unknown) => {
 			if (timeout) deps.clearTimeout(timeout);
