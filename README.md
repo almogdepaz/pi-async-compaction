@@ -1,6 +1,22 @@
 # pi async compaction
 
-Pi extension that precomputes compaction summaries in the background, then applies a ready summary through Pi's normal compaction flow when the agent is idle or when Pi triggers `/compact`/auto-compaction.
+Keep long Pi coding sessions responsive by precomputing context compaction in the background.
+
+```bash
+pi install npm:pi-async-compaction
+```
+
+Async compaction prepares Pi-compatible compaction summaries before you hit the limit, then applies a ready summary through Pi's normal compaction flow when it is safe. No surprise active-turn interruption, no shortened summaries, no custom context format.
+
+## why install it
+
+- less waiting when context gets large
+- Pi-compatible summaries generated with Pi's exported compaction logic
+- safe apply only when Pi is idle and no queued messages would be reordered
+- status-line visibility while a background job is pending or ready
+- manual `/compact` and Pi's normal threshold/overflow compaction still work
+
+Best for long coding sessions, repo audits, multi-file edits, and context-heavy work where synchronous compaction tends to land at the worst possible moment.
 
 ## install
 
@@ -13,7 +29,7 @@ pi install npm:pi-async-compaction
 From git:
 
 ```bash
-pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.0
+pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.1
 ```
 
 Local development:
@@ -28,20 +44,41 @@ or test for one run:
 pi -e .
 ```
 
-## usage
+## demo
+
+When the context crosses the async start window, the extension starts a background summary and keeps chat output quiet:
+
+```text
+status: async_compaction ...
+```
+
+When the summary is ready but Pi is still busy or has queued messages, it waits instead of interrupting the active turn:
+
+```text
+status: async_compaction ready
+```
+
+At the next safe idle boundary, Pi's normal compaction flow consumes the ready summary and the extension emits a compact notification:
+
+```text
+Applied ready async compaction
+```
+
+A real screenshot/gif would help here; none is included yet because fake demo media is worse than no demo media.
+
+## how it works
 
 Async compaction precomputes summaries early, then applies them only at a safe boundary:
 
-- background summary starts after a turn when context crosses the async start threshold
-- when the summary is ready, the extension applies it immediately only if Pi is idle and has no queued messages
-- if Pi is still responding or has queued follow-up/steering messages, the ready summary is kept for later and Pi's status bar shows `async_compaction ready`
-- after `agent_end`, including an Escape-cancelled turn, the extension retries applying the ready summary once Pi has settled idle and no queued messages remain
-- Pi fires `session_before_compact`; if the ready async summary validates, the extension returns it
-- otherwise Pi falls back to normal synchronous compaction
+1. after a turn, if context usage crosses the async start threshold, a background summary starts
+2. the background job reuses Pi's compaction preparation/generation behavior so the summary stays Pi-compatible
+3. when the summary is ready, the extension applies it immediately only if Pi is idle and has no queued messages
+4. if Pi is still responding or has queued follow-up/steering messages, the ready summary is kept for later and Pi's status bar shows `async_compaction ready`
+5. after `agent_end`, including an Escape-cancelled turn, the extension retries applying the ready summary once Pi has settled idle and no queued messages remain
+6. Pi fires `session_before_compact`; if the ready async summary validates, the extension returns it
+7. otherwise Pi falls back to normal synchronous compaction
 
-Manual `/compact` and Pi's normal threshold/overflow compaction still work and can also use a ready async summary.
-
-While a background summary is running, Pi's status bar shows `async_compaction ...`. The extension clears that status when the background job applies, fails, or is invalidated; if a ready summary is waiting for a safe idle boundary, it shows `async_compaction ready`.
+Manual `/compact` and Pi's normal threshold/overflow compaction can also use a ready async summary.
 
 Manual trigger, bypassing the early-start threshold:
 

@@ -1,7 +1,7 @@
 {
   "name": "pi-async-compaction",
-  "version": "0.1.0",
-  "description": "Pi extension that precomputes compaction summaries in the background and applies them through Pi's normal compaction flow.",
+  "version": "0.1.1",
+  "description": "Keep long Pi coding sessions responsive by precomputing context compaction in the background.",
   "license": "MIT",
   "type": "module",
   "packageManager": "bun@1.3.9",
@@ -21,9 +21,14 @@
   "keywords": [
     "pi-package",
     "pi-extension",
+    "pi",
     "async-compaction",
+    "background-compaction",
+    "context-compaction",
     "compaction",
-    "context-management"
+    "context-management",
+    "long-sessions",
+    "coding-agent"
   ],
   "files": [
     "src/constants.ts",
