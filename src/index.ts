@@ -56,7 +56,7 @@ export default function asyncPrefixCompaction(pi: ExtensionAPI, injectedDeps: Pa
 	});
 
 	pi.on("agent_end", (_event, ctx) => {
-		deps.applyReadyCompaction(ctx, state);
+		setTimeout(() => deps.applyReadyCompaction(ctx, state), 0);
 	});
 
 	pi.on("model_select", (_event, ctx) => {

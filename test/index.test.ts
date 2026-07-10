@@ -129,6 +129,46 @@ describe("extension hooks", () => {
 			hasPendingMessages: () => false,
 			compact: () => compactTriggered++,
 		} as ExtensionContext);
+		expect(compactTriggered).toBe(0);
+
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(compactTriggered).toBe(1);
+	});
+
+	test("applies ready async compaction after aborted agent end settles idle", async () => {
+		let compactTriggered = 0;
+		let idle = false;
+		const deps = asyncJobDeps({ triggerCompaction: (jobCtx) => jobCtx.compact() });
+		const { handlers } = extensionHarness({
+			applyReadyCompaction: (jobCtx, state) => applyReadyCompaction(jobCtx, state, deps),
+			startAsyncJob: (jobCtx, state, options) => startAsyncJobWithDeps(jobCtx, state, deps, options),
+		});
+		const turnEndHandler = handlers.get("turn_end");
+		const agentEndHandler = handlers.get("agent_end");
+		if (!turnEndHandler) throw new Error("turn_end handler was not registered");
+		if (!agentEndHandler) throw new Error("agent_end handler was not registered");
+
+		const entries = compactableEntries();
+		turnEndHandler({}, {
+			...asyncJobContext(entries),
+			isIdle: () => false,
+			hasPendingMessages: () => false,
+			compact: () => compactTriggered++,
+		} as ExtensionContext);
+		await Promise.resolve();
+		expect(compactTriggered).toBe(0);
+
+		agentEndHandler({}, {
+			...asyncJobContext(entries),
+			isIdle: () => idle,
+			hasPendingMessages: () => false,
+			compact: () => compactTriggered++,
+		} as ExtensionContext);
+		expect(compactTriggered).toBe(0);
+
+		idle = true;
+		await new Promise((resolve) => setTimeout(resolve, 0));
 
 		expect(compactTriggered).toBe(1);
 	});
@@ -160,6 +200,7 @@ describe("extension hooks", () => {
 			hasPendingMessages: () => true,
 			compact: () => compactTriggered++,
 		} as ExtensionContext);
+		await new Promise((resolve) => setTimeout(resolve, 0));
 
 		expect(compactTriggered).toBe(0);
 	});

@@ -1,6 +1,6 @@
 # async prefix compaction design
 
-This Pi extension precomputes Pi-compatible compaction summaries in the background, triggers Pi's compaction flow when a summary is ready, and supplies that ready summary through Pi's normal compaction hook.
+This Pi extension precomputes Pi-compatible compaction summaries in the background, waits for a safe idle boundary before triggering Pi's compaction flow, and supplies the ready summary through Pi's normal compaction hook.
 
 Code entrypoint: [`src/index.ts`](./src/index.ts)
 
@@ -12,7 +12,7 @@ Pi compaction normally prepares a prefix of the active branch, asks the active m
 compaction summary + raw tail from firstKeptEntryId
 ```
 
-The model call is synchronous and blocks the agent. This extension moves that model call earlier by running the same compaction generation path in the background after a turn. When the background result becomes ready, the extension calls `ctx.compact()` so Pi immediately applies the validated ready result through its ordinary compaction pipeline.
+The model call is synchronous and blocks the agent. This extension moves that model call earlier by running the same compaction generation path in the background after a turn. When the background result becomes ready, the extension applies it through Pi's ordinary compaction pipeline only when `ctx.isIdle()` and `!ctx.hasPendingMessages()`, so a ready summary does not abort an active response or queued follow-up work.
 
 Quality goal: async compaction should behave like Pi compaction. The extension therefore reuses Pi's exported `compact()` function for summary generation, including previous-summary merging, split-turn handling, and file-operation tags.
 
@@ -31,9 +31,21 @@ contextTokens <= contextWindow - piSettings.compaction.reserveTokens
 
 `PI_ASYNC_PREFIX_COMPACTION_START_RATIO` is only the early-start threshold. Reserve and keep-recent behavior come from Pi compaction settings.
 
+### `agent_end`
+
+When a background job is already ready, this hook retries applying it after the full user prompt completes or is cancelled with Escape. `turn_end` is not sufficient because a single prompt can contain multiple LLM/tool turns.
+
+Pi's `agent_end` event fires before the agent reports idle to extension handlers, so the extension schedules the apply check on the next macrotask. It calls `ctx.compact()` only when:
+
+```text
+ctx.isIdle() && !ctx.hasPendingMessages()
+```
+
+If queued steering/follow-up messages remain, the ready summary stays in memory and the status line remains `async_compaction ready`.
+
 ### `session_before_compact`
 
-When Pi runs compaction — either because this extension called `ctx.compact()`, because the user ran manual `/compact`, or because Pi auto-compacted — the extension validates the ready job and returns:
+When Pi runs compaction — either because this extension safely called `ctx.compact()`, because the user ran manual `/compact`, or because Pi auto-compacted — the extension validates the ready job and returns:
 
 ```ts
 { compaction: readyCompactionResult }
@@ -58,7 +70,9 @@ idle -> pending -> ready -> idle
               \-> stale | failed
 ```
 
-`/async-compact-now` starts a background job immediately, bypassing the early-start threshold while still respecting the enabled/model/settings/preparation guards. Pending background work is shown through Pi's CLI status line.
+`/async-compact-now` starts a background job immediately, bypassing the early-start threshold while still respecting the enabled/model/settings/preparation guards. If a reusable ready job already exists, the command requests apply through the same safe idle gate rather than aborting an active response.
+
+Pending background work is shown through Pi's CLI status line.
 
 Pi reports context usage as unknown after compaction until a later assistant response provides fresh usage.
 
@@ -132,9 +146,9 @@ If any check fails, the job becomes stale and Pi falls back to synchronous compa
 
 ## ready-job replacement
 
-A pending background job sets Pi's extension status to `async_compaction ...`. The status is cleared when the job becomes ready, fails, is invalidated, or hands off to Pi compaction, so the normal CLI is shown while idle.
+A pending background job sets Pi's extension status to `async_compaction ...`. When the job becomes ready, the extension attempts to apply it only if Pi is idle and has no queued messages. If applying is not safe yet, the job remains ready and Pi's extension status becomes `async_compaction ready`.
 
-A ready job immediately triggers Pi compaction via `ctx.compact()`. If compaction does not run immediately or the ready job remains around, it is kept while it still validates and its preview fits. If later turns make the ready summary too large to apply, or session/model/thinking/settings drift makes it unusable, a new `turn_end` crossing supersedes it and starts a replacement background job.
+A ready job triggers Pi compaction via `ctx.compact()` only from a safe boundary (`agent_end` or immediate background completion while already idle). If compaction does not run immediately or the ready job remains around, it is kept while it still validates and its preview fits. If later turns make the ready summary too large to apply, or session/model/thinking/settings drift makes it unusable, a new `turn_end` crossing supersedes it and starts a replacement background job.
 
 Pending jobs are not replaced; `/async-compact-now` is a no-op while a job is pending. If Pi compacts while a job is pending, the job is staled with `sync_fallback` and Pi compacts synchronously. Automatic and manual jobs use `PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS`, which defaults to five minutes.
 
@@ -164,7 +178,8 @@ Possible reasons:
 Environment variables:
 
 ```bash
-PI_ASYNC_PREFIX_COMPACTION_START_RATIO=0.8
+# optional; built-in default is 0.8, use 0.5 to start precomputing around half context
+PI_ASYNC_PREFIX_COMPACTION_START_RATIO=0.5
 PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS=300000
 ```
 
@@ -185,9 +200,10 @@ The extension is enabled by default; `PI_ASYNC_PREFIX_COMPACTION=0` disables it.
 ## limitations
 
 - In-memory only: pending/ready summaries do not survive process restart or `/reload`.
-- One job only: pending jobs block new jobs until applied, failed, or staled.
+- One job only: pending/ready jobs block new jobs until applied, failed, or staled.
 - Preparation mirrors Pi's internal `prepareCompaction()` because it is not exported yet; this should be replaced with the real exported function if Pi exposes it.
 - Automatic start requires a non-empty token window: `floor(contextWindow * START_RATIO) < tokens <= contextWindow - reserveTokens`.
+- Ready summaries wait for `ctx.isIdle()` and no pending queued messages before the extension triggers Pi compaction; if the user keeps queueing follow-up work, apply is deferred.
 - No metrics export or separate status command.
 - `customInstructions` forces fallback to normal compaction.
 
