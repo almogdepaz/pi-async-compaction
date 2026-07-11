@@ -1,5 +1,11 @@
 # changelog
 
+## 0.1.4 — 2026-07-10
+
+- tuned npm/github description for exact-match discovery queries
+- added package-name and Pi coding-agent keywords for npm search
+- added context-window and token-management search terms
+
 ## 0.1.3 — 2026-07-10
 
 - added `llms.txt` for agent/search discovery

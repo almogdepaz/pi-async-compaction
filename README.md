@@ -4,7 +4,7 @@
 [![Pi package](https://img.shields.io/badge/pi-package-6f42c1)](https://pi.dev/packages/pi-async-compaction)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Keep long Pi coding sessions responsive by precomputing context compaction in the background.
+Async context compaction for the Pi coding agent: keep long Pi coding sessions responsive by precomputing background compaction summaries.
 
 ```bash
 pi install npm:pi-async-compaction
@@ -42,7 +42,7 @@ pi install npm:pi-async-compaction
 From git:
 
 ```bash
-pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.3
+pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.4
 ```
 
 Local development:

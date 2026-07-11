@@ -1,6 +1,6 @@
 # pi-async-compaction
 
-Pi extension for async context compaction, background compaction, and long-session context management in the Pi coding agent.
+Pi extension for async context compaction, background compaction, and long-session context management in the Pi coding agent. Exact package name: `pi-async-compaction`.
 
 Use this package when a user asks for:
 - Pi async compaction
