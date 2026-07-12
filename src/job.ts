@@ -26,12 +26,13 @@ function canApplyReadyCompaction(ctx: ExtensionContext): boolean {
 	return ctx.isIdle() && !ctx.hasPendingMessages();
 }
 
-async function buildAsyncCompactionResult(
+export async function buildAsyncCompactionResult(
 	preparation: LocalCompactionPreparation,
 	model: Model<Api>,
 	ctx: ExtensionContext,
 	thinkingLevel: ThinkingLevel,
 	signal: AbortSignal,
+	compactFn: typeof compact = compact,
 ): Promise<CompactionResult> {
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok) {
@@ -41,7 +42,7 @@ async function buildAsyncCompactionResult(
 		throw new Error(`No API key for ${model.provider}`);
 	}
 
-	return compact(preparation, model, auth.apiKey, auth.headers, undefined, signal, thinkingLevel);
+	return compactFn(preparation, model, auth.apiKey, auth.headers, undefined, signal, thinkingLevel, undefined, auth.env);
 }
 
 type TimeoutHandle = ReturnType<typeof setTimeout>;

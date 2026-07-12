@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { startAsyncJobWithDeps } from "../src/job";
+import { buildAsyncCompactionResult, startAsyncJobWithDeps } from "../src/job";
 import { createRuntimeState } from "../src/runtime-state";
 import { asyncJobContext, asyncJobDeps, compactableEntries, readyJob, settings } from "./test-fixtures";
 
@@ -11,6 +11,43 @@ describe("startAsyncJob lifecycle", () => {
 
 		expect(state.status).toBe("idle");
 		expect(state.jobId).toBeUndefined();
+	});
+
+	test("passes resolved auth environment to Pi compaction", async () => {
+		const entries = compactableEntries();
+		const ctx = {
+			...asyncJobContext(entries),
+			modelRegistry: {
+				getApiKeyAndHeaders: async () => ({
+					ok: true as const,
+					apiKey: "test-key",
+					env: { AWS_PROFILE: "compaction-profile" },
+				}),
+			},
+		} as unknown as ReturnType<typeof asyncJobContext>;
+		if (!ctx.model) throw new Error("expected test model");
+		let compactArguments: unknown[] | undefined;
+		await buildAsyncCompactionResult(
+			{
+				firstKeptEntryId: "u2",
+				messagesToSummarize: [],
+				turnPrefixMessages: [],
+				isSplitTurn: false,
+				tokensBefore: 100,
+				fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+				settings,
+			},
+			ctx.model,
+			ctx,
+			"off",
+			new AbortController().signal,
+			async (...args) => {
+				compactArguments = args;
+				return { summary: "async summary", firstKeptEntryId: "u2", tokensBefore: 100 };
+			},
+		);
+
+		expect(compactArguments?.[8]).toEqual({ AWS_PROFILE: "compaction-profile" });
 	});
 
 	test("sets cli status line while a background job is pending", () => {

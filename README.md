@@ -87,7 +87,7 @@ Async compaction precomputes summaries early, then applies them only at a safe b
 2. the background job reuses Pi's compaction preparation/generation behavior so the summary stays Pi-compatible
 3. when the summary is ready, the extension applies it immediately only if Pi is idle and has no queued messages
 4. if Pi is still responding or has queued follow-up/steering messages, the ready summary is kept for later and Pi's status bar shows `async_compaction ready`
-5. after `agent_end`, including an Escape-cancelled turn, the extension retries applying the ready summary once Pi has settled idle and no queued messages remain
+5. after `agent_end`, including an Escape-cancelled turn, the extension briefly retries while Pi settles, applying only once Pi is idle and no queued messages remain
 6. Pi fires `session_before_compact`; if the ready async summary validates, the extension returns it
 7. otherwise Pi falls back to normal synchronous compaction
 
@@ -142,7 +142,6 @@ The extension is enabled by default; set `PI_ASYNC_PREFIX_COMPACTION=0` to disab
 ## roadmap
 
 - add a real terminal gif/screenshot for the demo section
-- improve safe-apply retry behavior when Pi takes longer than one tick to settle idle
 - apply before the next top-level prompt if Pi exposes a clean pre-prompt extension hook
 - upstream/request a non-aborting compaction-apply hook for queued steering/follow-up boundaries
 

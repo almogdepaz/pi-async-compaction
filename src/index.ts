@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { EXTENSION_NAME, InvalidationReason } from "./constants";
+import { APPLY_RETRY_DELAY_MS, APPLY_RETRY_LIMIT, EXTENSION_NAME, InvalidationReason } from "./constants";
 import { applyReadyCompaction, startAsyncJob } from "./job";
 import type { StartAsyncJobOutcome } from "./job";
 import { createRuntimeState, markStale } from "./runtime-state";
@@ -51,12 +51,32 @@ export default function asyncPrefixCompaction(pi: ExtensionAPI, injectedDeps: Pa
 		clearCliStatus(ctx);
 	}
 
+	function scheduleReadyCompactionApply(
+		ctx: ExtensionContext,
+		expectedJobId?: string,
+		retriesRemaining = APPLY_RETRY_LIMIT,
+	): void {
+		const delayMs = expectedJobId ? APPLY_RETRY_DELAY_MS : 0;
+		setTimeout(() => {
+			const readyJobId = state.ready?.jobId;
+			if (state.status !== "ready" || !readyJobId || (expectedJobId && readyJobId !== expectedJobId)) return;
+			if (ctx.hasPendingMessages()) return;
+			if (ctx.isIdle()) {
+				deps.applyReadyCompaction(ctx, state);
+				return;
+			}
+			if (retriesRemaining > 0) {
+				scheduleReadyCompactionApply(ctx, readyJobId, retriesRemaining - 1);
+			}
+		}, delayMs);
+	}
+
 	pi.on("turn_end", (_event, ctx) => {
 		deps.startAsyncJob(ctx, state);
 	});
 
 	pi.on("agent_end", (_event, ctx) => {
-		setTimeout(() => deps.applyReadyCompaction(ctx, state), 0);
+		scheduleReadyCompactionApply(ctx);
 	});
 
 	pi.on("model_select", (_event, ctx) => {
