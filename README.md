@@ -59,6 +59,8 @@ pi -e .
 
 ## demo
 
+![pi async compaction preview](media/social-preview.png)
+
 When the context crosses the async start window, the extension starts a background summary and keeps chat output quiet:
 
 ```text
@@ -77,7 +79,7 @@ At the next safe idle boundary, Pi's normal compaction flow consumes the ready s
 Applied ready async compaction
 ```
 
-A real screenshot/gif would help here; none is included yet because fake demo media is worse than no demo media.
+The static preview above is also used for the pi.dev package gallery.
 
 ## how it works
 
@@ -141,7 +143,7 @@ The extension is enabled by default; set `PI_ASYNC_PREFIX_COMPACTION=0` to disab
 
 ## roadmap
 
-- add a real terminal gif/screenshot for the demo section
+- add a real terminal gif for the demo section
 - apply before the next top-level prompt if Pi exposes a clean pre-prompt extension hook
 - upstream/request a non-aborting compaction-apply hook for queued steering/follow-up boundaries
 

@@ -1,5 +1,10 @@
 # changelog
 
+## 0.1.5 — 2026-07-17
+
+- added a pi.dev package gallery preview image
+- included preview media in the published package
+
 ## 0.1.4 — 2026-07-10
 
 - tuned npm/github description for exact-match discovery queries

@@ -1,6 +1,6 @@
 {
   "name": "pi-async-compaction",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Async context compaction for the Pi coding agent: precompute background summaries for long sessions.",
   "license": "MIT",
   "type": "module",
@@ -51,13 +51,15 @@
     "ASYNC_COMPACTION_DESIGN.md",
     "CHANGELOG.md",
     "docs/async-context-compaction.md",
+    "media/social-preview.png",
     "llms.txt",
     "LICENSE"
   ],
   "pi": {
     "extensions": [
       "./src/index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/almogdepaz/pi-async-compaction/main/media/social-preview.png"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.80.3 <0.81.0",
