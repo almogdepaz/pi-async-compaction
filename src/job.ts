@@ -2,21 +2,13 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CompactionResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { compact } from "@earendil-works/pi-coding-agent";
+import { createBuiltinPiCompactionAdapter } from "./adapter";
+import type { AsyncCompactionAdapter } from "./adapter";
 import { EXTENSION_NAME, InvalidationReason, SUMMARY_PROMPT_VERSION } from "./constants";
-import { prepareAsyncCompaction } from "./preparation";
 import { getAbortInvalidationReason, markStale, nextJobId } from "./runtime-state";
 import type { AsyncCompactionDetails, LocalCompactionPreparation, ReadyJob, ResolvedCompactionSettings, RuntimeState, Snapshot } from "./types";
 import { getReadyJobContextInvalidationReason } from "./validation";
-import {
-	getCompactionSettings,
-	getStartRatio,
-	getStartWindow,
-	getThinkingLevel,
-	getTimeoutMs,
-	isEnabled,
-	modelKey,
-	settingsKey,
-} from "./utils";
+import { getCompactionSettings, getStartRatio, getStartWindow, getTimeoutMs, isEnabled } from "./utils";
 
 function shouldReplaceReadyJob(ready: ReadyJob, ctx: ExtensionContext, settings: ResolvedCompactionSettings): boolean {
 	return getReadyJobContextInvalidationReason(ready, ctx, settings) !== undefined;
@@ -48,6 +40,7 @@ export async function buildAsyncCompactionResult(
 type TimeoutHandle = ReturnType<typeof setTimeout>;
 
 interface StartAsyncJobDependencies {
+	readonly adapter?: AsyncCompactionAdapter<unknown, unknown>;
 	readonly buildAsyncCompactionResult: (
 		preparation: LocalCompactionPreparation,
 		model: Model<Api>,
@@ -66,6 +59,7 @@ interface StartAsyncJobDependencies {
 }
 
 interface StartAsyncJobOptions {
+	readonly adapter?: AsyncCompactionAdapter<unknown, unknown>;
 	readonly force: boolean;
 	readonly timeoutMs?: number;
 }
@@ -102,7 +96,12 @@ export function startAsyncJob(
 	state: RuntimeState,
 	options: StartAsyncJobOptions = { force: false, timeoutMs: undefined },
 ): StartAsyncJobOutcome {
-	return startAsyncJobWithDeps(ctx, state, defaultStartAsyncJobDependencies, options);
+	return startAsyncJobWithDeps(
+		ctx,
+		state,
+		{ ...defaultStartAsyncJobDependencies, adapter: options.adapter },
+		options,
+	);
 }
 
 export function applyReadyCompaction(
@@ -151,12 +150,7 @@ function recordEmptySummaryFailure(state: RuntimeState): void {
 	state.error = "empty compaction summary";
 }
 
-function storeReadyResult(
-	state: RuntimeState,
-	snapshot: Snapshot,
-	result: CompactionResult,
-	thinkingLevel: ThinkingLevel,
-): void {
+function storeReadyResult(state: RuntimeState, snapshot: Snapshot, result: CompactionResult): void {
 	const piDetails = result.details && typeof result.details === "object" && !Array.isArray(result.details) ? result.details : {};
 
 	state.abortController = undefined;
@@ -171,7 +165,7 @@ function storeReadyResult(
 					jobId: snapshot.jobId,
 					snapshotLeafId: snapshot.snapshotLeafId,
 					modelKey: snapshot.modelKey,
-					thinkingLevel,
+					thinkingLevel: snapshot.thinkingLevel,
 					settingsKey: snapshot.settingsKey,
 					promptVersion: SUMMARY_PROMPT_VERSION,
 				},
@@ -227,25 +221,8 @@ function markPending(state: RuntimeState, jobId: string, abortController: AbortC
 	state.lastHandedOffJobId = undefined;
 }
 
-function createSnapshot(
-	ctx: ExtensionContext,
-	jobId: string,
-	snapshotLeafId: string,
-	preparation: LocalCompactionPreparation,
-	model: Model<Api>,
-	thinkingLevel: ThinkingLevel,
-	settings: ResolvedCompactionSettings,
-): Snapshot {
-	return {
-		jobId,
-		sessionId: ctx.sessionManager.getSessionId(),
-		snapshotLeafId,
-		firstKeptEntryId: preparation.firstKeptEntryId,
-		modelKey: modelKey(model),
-		thinkingLevel,
-		settingsKey: settingsKey(settings),
-		promptVersion: SUMMARY_PROMPT_VERSION,
-	};
+function getAdapter(deps: StartAsyncJobDependencies): AsyncCompactionAdapter<unknown, unknown> {
+	return deps.adapter ?? createBuiltinPiCompactionAdapter(deps.buildAsyncCompactionResult) as AsyncCompactionAdapter<unknown, unknown>;
 }
 
 export function startAsyncJobWithDeps(
@@ -274,21 +251,15 @@ export function startAsyncJobWithDeps(
 		markStale(state, InvalidationReason.SUPERSEDED);
 	}
 
-	const branch = ctx.sessionManager.getBranch();
-	const preparation = prepareAsyncCompaction(branch, settings);
-	if (!preparation) return "nothing_to_compact";
-
-	const snapshotLeafId = branch[branch.length - 1]?.id;
-	if (!snapshotLeafId) return "nothing_to_compact";
+	const adapter = options.adapter ?? getAdapter(deps);
+	const prepared = adapter.prepare({ ctx, settings });
+	if (!prepared) return "nothing_to_compact";
 
 	const jobId = nextJobId(state);
 	const abortController = new AbortController();
+	const snapshot = adapter.createSnapshot({ ctx, jobId, prepared, settings });
 	markPending(state, jobId, abortController);
 	deps.setCliStatus(ctx, "async_compaction ...");
-
-	const model = ctx.model;
-	const thinkingLevel = getThinkingLevel(branch);
-	const snapshot = createSnapshot(ctx, jobId, snapshotLeafId, preparation, model, thinkingLevel, settings);
 
 	const timeoutMs = options.timeoutMs ?? deps.getTimeoutMs();
 	let timedOut = false;
@@ -296,8 +267,8 @@ export function startAsyncJobWithDeps(
 		timedOut = true;
 	});
 
-	void deps.buildAsyncCompactionResult(preparation, model, ctx, thinkingLevel, abortController.signal)
-		.then((result) => {
+	void adapter.run({ ctx, prepared, signal: abortController.signal })
+		.then((adapterResult) => {
 			if (timeout) deps.clearTimeout(timeout);
 			if (state.status !== "pending" || state.jobId !== jobId) return;
 			if (abortController.signal.aborted) {
@@ -305,13 +276,15 @@ export function startAsyncJobWithDeps(
 				deps.setCliStatus(ctx, undefined);
 				return;
 			}
+
+			const result = adapter.toCompaction({ prepared, snapshot, result: adapterResult });
 			if (!result.summary.trim()) {
 				recordEmptySummaryFailure(state);
 				deps.setCliStatus(ctx, undefined);
 				return;
 			}
 
-			storeReadyResult(state, snapshot, result, thinkingLevel);
+			storeReadyResult(state, snapshot, result);
 			applyReadyCompaction(ctx, state, deps);
 		})
 		.catch((error: unknown) => {

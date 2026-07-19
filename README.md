@@ -101,6 +101,32 @@ Manual trigger, bypassing the early-start threshold:
 /async-compact-now
 ```
 
+## for compaction package authors (experimental)
+
+If your package currently does slow work inside `session_before_compact`, use `pi-async-compaction/core` to run that work in the background and hand off a ready `CompactionResult` later.
+
+```ts
+import { registerAsyncCompaction } from "pi-async-compaction/core";
+import type { AsyncCompactionAdapter } from "pi-async-compaction/core";
+
+const adapter: AsyncCompactionAdapter<MyPreparedSnapshot, MySummaryResult> = {
+  id: "my-compactor",
+  label: "my compactor",
+  prepare: ({ ctx, settings }) => snapshotCompactionInput(ctx, settings),
+  createSnapshot: ({ ctx, jobId, prepared, settings }) => makeValidationSnapshot(ctx, jobId, prepared, settings),
+  run: ({ prepared, signal }) => summarizeInBackground(prepared, signal),
+  toCompaction: ({ prepared, result }) => toPiCompactionResult(prepared, result),
+};
+
+export default function myExtension(pi) {
+  registerAsyncCompaction(pi, adapter, { commandName: "my-async-compact-now" });
+}
+```
+
+Your package still owns the summary format, model calls, custom cut policy, and `details` payload. `pi-async-compaction` owns lifecycle: threshold start, pending/ready/stale state, timeout/cancel, status line, safe idle apply, and final `session_before_compact` handoff.
+
+Full guide: [docs/async-compaction-adapters.md](docs/async-compaction-adapters.md).
+
 ## FAQ
 
 ### How do I make Pi compaction async?

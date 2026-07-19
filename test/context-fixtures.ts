@@ -1,6 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionBeforeCompactEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
 import asyncPrefixCompaction from "../src/index";
+import { createBuiltinPiCompactionAdapter } from "../src/adapter";
 import { startAsyncJobWithDeps } from "../src/job";
 import { validateReadyJob } from "../src/validation";
 import { assistantEntry, userEntry } from "./entry-fixtures";
@@ -109,7 +110,7 @@ export function manualCommandContext(entries: readonly SessionEntry[] = manualCo
 }
 
 export function asyncJobDeps(overrides: Partial<Parameters<typeof startAsyncJobWithDeps>[2]> = {}): Parameters<typeof startAsyncJobWithDeps>[2] {
-	return {
+	const deps = {
 		buildAsyncCompactionResult: async (preparation) => ({
 			summary: "async summary",
 			firstKeptEntryId: preparation.firstKeptEntryId,
@@ -125,6 +126,11 @@ export function asyncJobDeps(overrides: Partial<Parameters<typeof startAsyncJobW
 		clearTimeout,
 		triggerCompaction: () => undefined,
 		...overrides,
+	} satisfies Parameters<typeof startAsyncJobWithDeps>[2];
+
+	return {
+		...deps,
+		adapter: overrides.adapter ?? createBuiltinPiCompactionAdapter(deps.buildAsyncCompactionResult),
 	};
 }
 

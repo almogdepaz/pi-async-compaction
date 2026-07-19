@@ -3,6 +3,7 @@
 This Pi extension precomputes Pi-compatible compaction summaries in the background, waits for a safe idle boundary before triggering Pi's compaction flow, and supplies the ready summary through Pi's normal compaction hook.
 
 Code entrypoint: [`src/index.ts`](./src/index.ts)
+Experimental adapter entrypoint for other packages: [`src/core.ts`](./src/core.ts)
 
 ## goal
 
@@ -77,6 +78,21 @@ Pending background work is shown through Pi's CLI status line.
 Pi reports context usage as unknown after compaction until a later assistant response provides fresh usage.
 
 No pending/ready metadata is persisted. Only an applied compaction is persisted by Pi as a normal `CompactionEntry`.
+
+## experimental adapter api
+
+Other compaction packages can opt into the same lifecycle by importing `registerAsyncCompaction` from `pi-async-compaction/core` and supplying an `AsyncCompactionAdapter<TPrepared, TResult>`. See the package-author guide in [`docs/async-compaction-adapters.md`](./docs/async-compaction-adapters.md).
+
+The lifecycle boundary is:
+
+1. `prepare()` snapshots package-owned compaction input from the current Pi context
+2. `createSnapshot()` records validation metadata such as session id, first-kept id, model key, thinking level, and settings key
+3. `run()` performs expensive work in the background with an abort signal
+4. `toCompaction()` converts package-specific output into a Pi `CompactionResult`
+
+Core still owns timeout/cancel handling, pending/ready/stale state, status display, idle-only apply, `session_before_compact` handoff, and validation. Adapters own prompt format, summary semantics, custom cut policy, details payload, and output validation beyond the core non-empty-summary guard.
+
+This is opt-in infrastructure, not dynamic wrapping. Packages that mutate live session state directly need their own refactor before they can use it safely.
 
 ## snapshot contents
 

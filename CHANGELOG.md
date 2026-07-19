@@ -1,5 +1,11 @@
 # changelog
 
+## 0.1.6 — 2026-07-19
+
+- added experimental `pi-async-compaction/core` adapter api for package authors
+- extracted builtin Pi compaction behind the shared async adapter lifecycle
+- added adapter migration docs and external adapter smoke coverage
+
 ## 0.1.5 — 2026-07-17
 
 - added a pi.dev package gallery preview image

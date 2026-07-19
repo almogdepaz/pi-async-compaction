@@ -1,6 +1,6 @@
 {
   "name": "pi-async-compaction",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Async context compaction for the Pi coding agent: precompute background summaries for long sessions.",
   "license": "MIT",
   "type": "module",
@@ -38,7 +38,13 @@
     "llm-context",
     "developer-tools"
   ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./core": "./src/core.ts"
+  },
   "files": [
+    "src/adapter.ts",
+    "src/core.ts",
     "src/constants.ts",
     "src/index.ts",
     "src/job.ts",
@@ -50,6 +56,7 @@
     "README.md",
     "ASYNC_COMPACTION_DESIGN.md",
     "CHANGELOG.md",
+    "docs/async-compaction-adapters.md",
     "docs/async-context-compaction.md",
     "media/social-preview.png",
     "llms.txt",

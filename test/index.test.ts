@@ -106,7 +106,8 @@ describe("extension hooks", () => {
 		const deps = asyncJobDeps({ triggerCompaction: (jobCtx) => jobCtx.compact() });
 		const { handlers } = extensionHarness({
 			applyReadyCompaction: (jobCtx, state) => applyReadyCompaction(jobCtx, state, deps),
-			startAsyncJob: (jobCtx, state, options) => startAsyncJobWithDeps(jobCtx, state, deps, options),
+			startAsyncJob: (jobCtx, state, options) =>
+				startAsyncJobWithDeps(jobCtx, state, deps, { ...(options ?? { force: false }), adapter: undefined }),
 		});
 		const turnEndHandler = handlers.get("turn_end");
 		const agentEndHandler = handlers.get("agent_end");
@@ -149,7 +150,8 @@ describe("extension hooks", () => {
 			const deps = asyncJobDeps({ triggerCompaction: (jobCtx) => jobCtx.compact() });
 			const { handlers } = extensionHarness({
 				applyReadyCompaction: (jobCtx, state) => applyReadyCompaction(jobCtx, state, deps),
-				startAsyncJob: (jobCtx, state, options) => startAsyncJobWithDeps(jobCtx, state, deps, options),
+				startAsyncJob: (jobCtx, state, options) =>
+				startAsyncJobWithDeps(jobCtx, state, deps, { ...(options ?? { force: false }), adapter: undefined }),
 			});
 			const turnEndHandler = handlers.get("turn_end");
 			const agentEndHandler = handlers.get("agent_end");
@@ -188,7 +190,8 @@ describe("extension hooks", () => {
 		const deps = asyncJobDeps({ triggerCompaction: (jobCtx) => jobCtx.compact() });
 		const { handlers } = extensionHarness({
 			applyReadyCompaction: (jobCtx, state) => applyReadyCompaction(jobCtx, state, deps),
-			startAsyncJob: (jobCtx, state, options) => startAsyncJobWithDeps(jobCtx, state, deps, options),
+			startAsyncJob: (jobCtx, state, options) =>
+				startAsyncJobWithDeps(jobCtx, state, deps, { ...(options ?? { force: false }), adapter: undefined }),
 		});
 		const turnEndHandler = handlers.get("turn_end");
 		const agentEndHandler = handlers.get("agent_end");
@@ -217,7 +220,8 @@ describe("extension hooks", () => {
 
 	test("collapses Pi compaction summary before handing off a ready job", async () => {
 		const { handlers, toolExpansionValues, ctx } = extensionHarness({
-			startAsyncJob: (jobCtx, state, options) => startAsyncJobWithDeps(jobCtx, state, asyncJobDeps(), options),
+			startAsyncJob: (jobCtx, state, options) =>
+				startAsyncJobWithDeps(jobCtx, state, asyncJobDeps(), { ...(options ?? { force: false }), adapter: undefined }),
 		});
 		const turnEndHandler = handlers.get("turn_end");
 		const beforeCompactHandler = handlers.get("session_before_compact");
@@ -240,7 +244,8 @@ describe("extension hooks", () => {
 
 	test("hands off compaction that lets Pi rebuild context without gaps through appended tail", async () => {
 		const { handlers } = extensionHarness({
-			startAsyncJob: (jobCtx, state, options) => startAsyncJobWithDeps(jobCtx, state, asyncJobDeps(), options),
+			startAsyncJob: (jobCtx, state, options) =>
+				startAsyncJobWithDeps(jobCtx, state, asyncJobDeps(), { ...(options ?? { force: false }), adapter: undefined }),
 		});
 		const turnEndHandler = handlers.get("turn_end");
 		const beforeCompactHandler = handlers.get("session_before_compact");
