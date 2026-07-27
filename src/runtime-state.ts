@@ -11,6 +11,7 @@ export function createRuntimeState(): RuntimeState {
 		abortController: undefined,
 		jobCounter: 0,
 		lastHandedOffJobId: undefined,
+		autoResumeAfterCompactionJobId: undefined,
 	};
 }
 
@@ -26,6 +27,7 @@ export function markStale(state: RuntimeState, reason: InvalidationReason): void
 	state.ready = undefined;
 	state.reason = reason;
 	state.lastHandedOffJobId = undefined;
+	state.autoResumeAfterCompactionJobId = undefined;
 }
 
 export function getAbortInvalidationReason(timedOut: boolean): InvalidationReason {

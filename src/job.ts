@@ -130,8 +130,12 @@ export function applyReadyCompaction(
 		return false;
 	}
 	const readyJobId = state.ready.jobId;
+	const shouldAbortBeforeApply = !ctx.isIdle();
 	deps.setCliStatus(ctx, undefined);
-	if (!ctx.isIdle()) ctx.abort();
+	if (shouldAbortBeforeApply) {
+		state.autoResumeAfterCompactionJobId = readyJobId;
+		ctx.abort();
+	}
 	deps.triggerCompaction(ctx, (error) => recordApplyError(state, readyJobId, error));
 	return true;
 }
@@ -145,6 +149,7 @@ function recordApplyError(state: RuntimeState, jobId: string, error: Error): voi
 	state.reason = InvalidationReason.FAILED;
 	state.error = `apply failed: ${error.message}`;
 	state.lastHandedOffJobId = undefined;
+	state.autoResumeAfterCompactionJobId = undefined;
 }
 
 function recordBackgroundFailure(state: RuntimeState, error: unknown): void {
@@ -230,6 +235,7 @@ function markPending(state: RuntimeState, jobId: string, abortController: AbortC
 	state.reason = undefined;
 	state.error = undefined;
 	state.lastHandedOffJobId = undefined;
+	state.autoResumeAfterCompactionJobId = undefined;
 }
 
 function getAdapter(deps: StartAsyncJobDependencies): AsyncCompactionAdapter<unknown, unknown> {

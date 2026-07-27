@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AsyncCompactionAdapter } from "./adapter";
-import { APPLY_RETRY_DELAY_MS, APPLY_RETRY_LIMIT, EXTENSION_NAME, InvalidationReason } from "./constants";
+import { APPLY_RETRY_DELAY_MS, APPLY_RETRY_LIMIT, AUTO_RESUME_PROMPT, EXTENSION_NAME, InvalidationReason } from "./constants";
 import { applyReadyCompaction, startAsyncJob } from "./job";
 import type { StartAsyncJobOutcome } from "./job";
 import { createRuntimeState, markStale } from "./runtime-state";
@@ -154,10 +154,13 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 		if (!marker) return;
 
 		if (state.lastHandedOffJobId === marker.jobId) state.lastHandedOffJobId = undefined;
+		const shouldAutoResume = state.autoResumeAfterCompactionJobId === marker.jobId;
+		if (shouldAutoResume) state.autoResumeAfterCompactionJobId = undefined;
 		if (ctx.hasUI) {
 			const ui = ctx.ui;
 			setTimeout(() => ui.notify("Applied ready async compaction", "info"), 0);
 		}
+		if (shouldAutoResume) setTimeout(() => pi.sendUserMessage(AUTO_RESUME_PROMPT), 0);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {

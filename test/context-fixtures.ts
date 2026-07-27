@@ -140,10 +140,15 @@ export function extensionHarness(deps?: Parameters<typeof asyncPrefixCompaction>
 	readonly notifyMessages: string[];
 	readonly statusValues: Array<string | undefined>;
 	readonly toolExpansionValues: boolean[];
+	readonly sentUserMessages: string[];
 	readonly ctx: ExtensionContext;
 } {
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	const commands = new Map<string, { readonly handler: (args: string, ctx: ExtensionContext) => unknown }>();
+	const notifyMessages: string[] = [];
+	const statusValues: Array<string | undefined> = [];
+	const toolExpansionValues: boolean[] = [];
+	const sentUserMessages: string[] = [];
 	const pi = {
 		on: (eventName: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => {
 			handlers.set(eventName, handler);
@@ -151,10 +156,10 @@ export function extensionHarness(deps?: Parameters<typeof asyncPrefixCompaction>
 		registerCommand: (name: string, command: { readonly handler: (args: string, ctx: ExtensionContext) => unknown }) => {
 			commands.set(name, command);
 		},
+		sendUserMessage: (content: string | readonly unknown[]) => {
+			if (typeof content === "string") sentUserMessages.push(content);
+		},
 	} as unknown as ExtensionAPI;
-	const notifyMessages: string[] = [];
-	const statusValues: Array<string | undefined> = [];
-	const toolExpansionValues: boolean[] = [];
 	const ctx = {
 		hasUI: true,
 		ui: {
@@ -172,7 +177,7 @@ export function extensionHarness(deps?: Parameters<typeof asyncPrefixCompaction>
 
 	asyncPrefixCompaction(pi, deps);
 
-	return { handlers, commands, notifyMessages, statusValues, toolExpansionValues, ctx };
+	return { handlers, commands, notifyMessages, statusValues, toolExpansionValues, sentUserMessages, ctx };
 }
 
 export function readyJob(overrides: Partial<Parameters<typeof validateReadyJob>[0]> = {}): Parameters<typeof validateReadyJob>[0] {

@@ -59,4 +59,5 @@ export interface RuntimeState {
 	abortController: AbortController | undefined;
 	jobCounter: number;
 	lastHandedOffJobId: string | undefined;
+	autoResumeAfterCompactionJobId: string | undefined;
 }

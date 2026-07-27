@@ -10,13 +10,13 @@ Async context compaction for the Pi coding agent: keep long Pi coding sessions r
 pi install npm:pi-async-compaction
 ```
 
-Async compaction prepares Pi-compatible compaction summaries before you hit the limit, then applies a ready summary through Pi's normal compaction flow. If an abortable active turn is already over the async threshold, it mirrors Pi's normal compaction behavior: abort, compact, and do not auto-resume the aborted turn.
+Async compaction prepares Pi-compatible compaction summaries before you hit the limit, then applies a ready summary through Pi's normal compaction flow. If an abortable active turn is already over the async threshold, it aborts, compacts, then automatically sends `continue` once Pi persists the compaction.
 
 ## why install it
 
 - less waiting when context gets large
 - Pi-compatible summaries generated with Pi's exported compaction logic
-- safe idle apply, plus Pi-compatible abort-and-compact when an active turn is already over the async threshold
+- safe idle apply, plus abort-and-compact with auto-resume when an active turn is already over the async threshold
 - status-line visibility while a background job is pending or ready
 - manual `/compact` and Pi's normal threshold/overflow compaction still work
 
@@ -27,7 +27,7 @@ Best for long coding sessions, repo audits, multi-file edits, and context-heavy 
 | normal Pi compaction | async compaction |
 | --- | --- |
 | waits to summarize when compaction is triggered | prepares the summary earlier in the background |
-| can land right before your next turn continues | usually applies at an idle boundary; over the async threshold it can abort-and-compact like Pi |
+| can land right before your next turn continues | usually applies at an idle boundary; over the async threshold it can abort, compact, and auto-resume |
 | uses Pi's built-in compaction behavior | also uses Pi's built-in compaction behavior |
 | visible as a synchronous pause | visible as a quiet status-line job |
 
@@ -88,10 +88,11 @@ Async compaction precomputes summaries early, then applies them only at a safe b
 1. after a turn, if context usage crosses the async start threshold, a background summary starts
 2. the background job reuses Pi's compaction preparation/generation behavior so the summary stays Pi-compatible
 3. when the summary is ready, the extension applies it immediately if Pi is idle and has no queued messages
-4. if Pi is actively responding, abortable, has no queued messages, and is still over the async threshold, it aborts and triggers Pi compaction; the aborted turn is not auto-resumed
-5. otherwise the ready summary is kept for later and Pi's status bar shows `async_compaction ready`; after `agent_end`, the extension briefly retries while Pi settles
-6. Pi fires `session_before_compact`; if the ready async summary validates, the extension returns it
-7. otherwise Pi falls back to normal synchronous compaction
+4. if Pi is actively responding, abortable, has no queued messages, and is still over the async threshold, it aborts and triggers Pi compaction
+5. after Pi persists that extension-provided compaction, the extension sends `continue` to resume work
+6. otherwise the ready summary is kept for later and Pi's status bar shows `async_compaction ready`; after `agent_end`, the extension briefly retries while Pi settles
+7. Pi fires `session_before_compact`; if the ready async summary validates, the extension returns it
+8. otherwise Pi falls back to normal synchronous compaction
 
 Manual `/compact` and Pi's normal threshold/overflow compaction can also use a ready async summary.
 
@@ -149,7 +150,7 @@ No. It preserves Pi's normal compaction behavior. Manual `/compact`, threshold c
 
 ### Does it interrupt active turns?
 
-Usually no. If an abortable active turn is already over the async threshold, the extension aborts and compacts like Pi's normal manual compaction. It does not auto-resume that aborted turn.
+Usually no. If an abortable active turn is already over the async threshold, the extension aborts, compacts, then automatically sends `continue` after Pi persists the compaction.
 
 ### What should agents search for?
 
