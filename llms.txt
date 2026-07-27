@@ -29,4 +29,4 @@ npm:
 https://www.npmjs.com/package/pi-async-compaction
 
 Summary:
-`pi-async-compaction` precomputes Pi-compatible compaction summaries in the background, then applies a ready summary through Pi's normal compaction flow when the session is idle and safe. It does not replace Pi's compaction format, shorten summaries, or interrupt active turns.
+`pi-async-compaction` precomputes Pi-compatible compaction summaries in the background, then applies a ready summary through Pi's normal compaction flow. It usually waits for an idle boundary; if an abortable active turn is already over the async threshold, it aborts and compacts like Pi's normal manual compaction. It does not replace Pi's compaction format or shorten summaries.

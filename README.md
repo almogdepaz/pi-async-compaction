@@ -10,13 +10,13 @@ Async context compaction for the Pi coding agent: keep long Pi coding sessions r
 pi install npm:pi-async-compaction
 ```
 
-Async compaction prepares Pi-compatible compaction summaries before you hit the limit, then applies a ready summary through Pi's normal compaction flow when it is safe. No surprise active-turn interruption, no shortened summaries, no custom context format.
+Async compaction prepares Pi-compatible compaction summaries before you hit the limit, then applies a ready summary through Pi's normal compaction flow. If an abortable active turn is already over the async threshold, it mirrors Pi's normal compaction behavior: abort, compact, and do not auto-resume the aborted turn.
 
 ## why install it
 
 - less waiting when context gets large
 - Pi-compatible summaries generated with Pi's exported compaction logic
-- safe apply only when Pi is idle and no queued messages would be reordered
+- safe idle apply, plus Pi-compatible abort-and-compact when an active turn is already over the async threshold
 - status-line visibility while a background job is pending or ready
 - manual `/compact` and Pi's normal threshold/overflow compaction still work
 
@@ -27,7 +27,7 @@ Best for long coding sessions, repo audits, multi-file edits, and context-heavy 
 | normal Pi compaction | async compaction |
 | --- | --- |
 | waits to summarize when compaction is triggered | prepares the summary earlier in the background |
-| can land right before your next turn continues | applies a ready summary only at a safe idle boundary |
+| can land right before your next turn continues | usually applies at an idle boundary; over the async threshold it can abort-and-compact like Pi |
 | uses Pi's built-in compaction behavior | also uses Pi's built-in compaction behavior |
 | visible as a synchronous pause | visible as a quiet status-line job |
 
@@ -67,7 +67,7 @@ When the context crosses the async start window, the extension starts a backgrou
 status: async_compaction ...
 ```
 
-When the summary is ready but Pi is still busy or has queued messages, it waits instead of interrupting the active turn:
+When the summary is ready but Pi is below the async threshold, not abortable, or has queued messages, it waits instead of interrupting the active turn:
 
 ```text
 status: async_compaction ready
@@ -87,9 +87,9 @@ Async compaction precomputes summaries early, then applies them only at a safe b
 
 1. after a turn, if context usage crosses the async start threshold, a background summary starts
 2. the background job reuses Pi's compaction preparation/generation behavior so the summary stays Pi-compatible
-3. when the summary is ready, the extension applies it immediately only if Pi is idle and has no queued messages
-4. if Pi is still responding or has queued follow-up/steering messages, the ready summary is kept for later and Pi's status bar shows `async_compaction ready`
-5. after `agent_end`, including an Escape-cancelled turn, the extension briefly retries while Pi settles, applying only once Pi is idle and no queued messages remain
+3. when the summary is ready, the extension applies it immediately if Pi is idle and has no queued messages
+4. if Pi is actively responding, abortable, has no queued messages, and is still over the async threshold, it aborts and triggers Pi compaction; the aborted turn is not auto-resumed
+5. otherwise the ready summary is kept for later and Pi's status bar shows `async_compaction ready`; after `agent_end`, the extension briefly retries while Pi settles
 6. Pi fires `session_before_compact`; if the ready async summary validates, the extension returns it
 7. otherwise Pi falls back to normal synchronous compaction
 
@@ -123,7 +123,7 @@ export default function myExtension(pi) {
 }
 ```
 
-Your package still owns the summary format, model calls, custom cut policy, and `details` payload. `pi-async-compaction` owns lifecycle: threshold start, pending/ready/stale state, timeout/cancel, status line, safe idle apply, and final `session_before_compact` handoff.
+Your package still owns the summary format, model calls, custom cut policy, and `details` payload. `pi-async-compaction` owns lifecycle: threshold start, pending/ready/stale state, timeout/cancel, status line, ready-result apply, and final `session_before_compact` handoff.
 
 Full guide: [docs/async-compaction-adapters.md](docs/async-compaction-adapters.md).
 
@@ -149,7 +149,7 @@ No. It preserves Pi's normal compaction behavior. Manual `/compact`, threshold c
 
 ### Does it interrupt active turns?
 
-No by design. A ready summary is applied only when Pi is idle and no queued messages would be reordered.
+Usually no. If an abortable active turn is already over the async threshold, the extension aborts and compacts like Pi's normal manual compaction. It does not auto-resume that aborted turn.
 
 ### What should agents search for?
 
@@ -165,7 +165,7 @@ PI_ASYNC_PREFIX_COMPACTION_START_RATIO=0.5
 PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS=300000
 ```
 
-The extension is enabled by default; set `PI_ASYNC_PREFIX_COMPACTION=0` to disable. Reserve and keep-recent tokens come from Pi's normal `compaction` settings. Automatic background jobs only start when `floor(contextWindow * START_RATIO) < tokens <= contextWindow - reserveTokens`; if that window is empty, use a larger context model, lower the start ratio, or lower Pi's reserve tokens. Pi's normal compaction threshold remains `contextWindow - reserveTokens`, so the async start ratio only controls how early the background summary is prepared.
+The extension is enabled by default; set `PI_ASYNC_PREFIX_COMPACTION=0` to disable. Reserve and keep-recent tokens come from Pi's normal `compaction` settings. Automatic background jobs only start when `floor(contextWindow * START_RATIO) < tokens <= contextWindow - reserveTokens`; if that window is empty, use a larger context model, lower the start ratio, or lower Pi's reserve tokens. Pi's normal compaction threshold remains `contextWindow - reserveTokens`; the async start ratio controls both how early the background summary is prepared and when a ready summary may abort-and-compact an active turn.
 
 ## roadmap
 

@@ -18,6 +18,16 @@ function canApplyReadyCompaction(ctx: ExtensionContext): boolean {
 	return ctx.isIdle() && !ctx.hasPendingMessages();
 }
 
+function shouldForceApplyReadyCompaction(ctx: ExtensionContext, deps: StartAsyncJobDependencies): boolean {
+	if (ctx.isIdle() || ctx.hasPendingMessages()) return false;
+	if (!ctx.signal || ctx.signal.aborted) return false;
+
+	const usage = ctx.getContextUsage();
+	if (!usage || usage.tokens === null || usage.contextWindow <= 0) return false;
+
+	return usage.tokens > Math.floor(usage.contextWindow * deps.getStartRatio());
+}
+
 export async function buildAsyncCompactionResult(
 	preparation: LocalCompactionPreparation,
 	model: Model<Api>,
@@ -115,12 +125,13 @@ export function applyReadyCompaction(
 		deps.setCliStatus(ctx, undefined);
 		return false;
 	}
-	if (!canApplyReadyCompaction(ctx)) {
+	if (!canApplyReadyCompaction(ctx) && !shouldForceApplyReadyCompaction(ctx, deps)) {
 		deps.setCliStatus(ctx, "async_compaction ready");
 		return false;
 	}
 	const readyJobId = state.ready.jobId;
 	deps.setCliStatus(ctx, undefined);
+	if (!ctx.isIdle()) ctx.abort();
 	deps.triggerCompaction(ctx, (error) => recordApplyError(state, readyJobId, error));
 	return true;
 }

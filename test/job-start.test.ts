@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildAsyncCompactionResult, startAsyncJobWithDeps } from "../src/job";
+import { applyReadyCompaction, buildAsyncCompactionResult, startAsyncJobWithDeps } from "../src/job";
 import { createRuntimeState } from "../src/runtime-state";
 import { asyncJobContext, asyncJobDeps, compactableEntries, readyJob, settings } from "./test-fixtures";
 
@@ -146,7 +146,7 @@ describe("startAsyncJob lifecycle", () => {
 		expect(compactTriggered).toBe(1);
 	});
 
-	test("does not trigger Pi compaction when a background job becomes ready during an active turn", async () => {
+	test("does not trigger Pi compaction when a background job becomes ready during an active turn without an abortable signal", async () => {
 		const state = createRuntimeState();
 		let compactTriggered = 0;
 
@@ -163,6 +163,69 @@ describe("startAsyncJob lifecycle", () => {
 
 		expect(state.status).toBe("ready");
 		expect(compactTriggered).toBe(0);
+	});
+
+	test("force-stops the active agent before applying a ready job over the async threshold", () => {
+		const state = createRuntimeState();
+		state.status = "ready";
+		state.jobId = "async-prefix-compaction-1";
+		state.jobCounter = 1;
+		state.ready = {
+			...readyJob({ snapshotLeafId: "u2" }),
+			jobId: "async-prefix-compaction-1",
+			snapshotLeafId: "u2",
+		};
+		let abortCalls = 0;
+		let compactTriggered = 0;
+		const signal = new AbortController().signal;
+
+		const applied = applyReadyCompaction(
+			{
+				...asyncJobContext(compactableEntries()),
+				isIdle: () => false,
+				hasPendingMessages: () => false,
+				signal,
+				abort: () => abortCalls++,
+			},
+			state,
+			asyncJobDeps({ triggerCompaction: () => compactTriggered++ }),
+		);
+
+		expect(applied).toBe(true);
+		expect(abortCalls).toBe(1);
+		expect(compactTriggered).toBe(1);
+	});
+
+	test("does not force-stop an abortable active agent below the async threshold", () => {
+		const state = createRuntimeState();
+		state.status = "ready";
+		state.jobId = "async-prefix-compaction-1";
+		state.jobCounter = 1;
+		state.ready = {
+			...readyJob({ snapshotLeafId: "u2" }),
+			jobId: "async-prefix-compaction-1",
+			snapshotLeafId: "u2",
+		};
+		let abortCalls = 0;
+		let compactTriggered = 0;
+		const signal = new AbortController().signal;
+
+		const applied = applyReadyCompaction(
+			{
+				...asyncJobContext(compactableEntries(), 800),
+				isIdle: () => false,
+				hasPendingMessages: () => false,
+				signal,
+				abort: () => abortCalls++,
+			},
+			state,
+			asyncJobDeps({ triggerCompaction: () => compactTriggered++ }),
+		);
+
+		expect(applied).toBe(false);
+		expect(abortCalls).toBe(0);
+		expect(compactTriggered).toBe(0);
+		expect(state.status).toBe("ready");
 	});
 
 	test("does not trigger Pi compaction when queued messages are pending", async () => {
