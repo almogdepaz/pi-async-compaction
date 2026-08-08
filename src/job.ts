@@ -1,17 +1,22 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CompactionResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { compact } from "@earendil-works/pi-coding-agent";
 import { createBuiltinPiCompactionAdapter } from "./adapter";
 import type { AsyncCompactionAdapter } from "./adapter";
-import { EXTENSION_NAME, InvalidationReason, SUMMARY_PROMPT_VERSION } from "./constants";
-import { getAbortInvalidationReason, markStale, nextJobId } from "./runtime-state";
-import type { AsyncCompactionDetails, LocalCompactionPreparation, ReadyJob, ResolvedCompactionSettings, RuntimeState, Snapshot } from "./types";
+import { InvalidationReason } from "./constants";
+import { emitLifecycleEvent, getLifecycleDurationMs } from "./diagnostics";
+import { getAbortInvalidationReason, getStatusKey, markStale, nextJobId } from "./runtime-state";
+import type { AsyncCompactionDetails, JobCorrelation, LocalCompactionPreparation, ReadyJob, ResolvedCompactionSettings, RuntimeState, Snapshot } from "./types";
 import { getReadyJobContextInvalidationReason } from "./validation";
 import { getCompactionSettings, getStartRatio, getStartWindow, getTimeoutMs, isEnabled } from "./utils";
 
-function shouldReplaceReadyJob(ready: ReadyJob, ctx: ExtensionContext, settings: ResolvedCompactionSettings): boolean {
-	return getReadyJobContextInvalidationReason(ready, ctx, settings) !== undefined;
+function getReadyJobReplacementReason(
+	ready: ReadyJob,
+	ctx: ExtensionContext,
+	settings: ResolvedCompactionSettings,
+): InvalidationReason | undefined {
+	return getReadyJobContextInvalidationReason(ready, ctx, settings);
 }
 
 function canApplyReadyCompaction(ctx: ExtensionContext): boolean {
@@ -26,6 +31,15 @@ function shouldForceApplyReadyCompaction(ctx: ExtensionContext, deps: StartAsync
 	if (!usage || usage.tokens === null || usage.contextWindow <= 0) return false;
 
 	return usage.tokens > Math.floor(usage.contextWindow * deps.getStartRatio());
+}
+
+function normalizeProviderHeaders(headers: ProviderHeaders | undefined): Record<string, string> | undefined {
+	if (!headers) return undefined;
+	const normalized: Record<string, string> = {};
+	for (const [name, value] of Object.entries(headers)) {
+		if (value !== null) normalized[name] = value;
+	}
+	return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 export async function buildAsyncCompactionResult(
@@ -44,7 +58,7 @@ export async function buildAsyncCompactionResult(
 		throw new Error(`No API key for ${model.provider}`);
 	}
 
-	return compactFn(preparation, model, auth.apiKey, auth.headers, undefined, signal, thinkingLevel, undefined, auth.env);
+	return compactFn(preparation, model, auth.apiKey, normalizeProviderHeaders(auth.headers), undefined, signal, thinkingLevel, undefined, auth.env);
 }
 
 type TimeoutHandle = ReturnType<typeof setTimeout>;
@@ -62,7 +76,7 @@ interface StartAsyncJobDependencies {
 	readonly getStartRatio: () => number;
 	readonly getTimeoutMs: () => number;
 	readonly isEnabled: () => boolean;
-	readonly setCliStatus: (ctx: ExtensionContext, text: string | undefined) => void;
+	readonly setCliStatus: (ctx: ExtensionContext, statusKey: string, text: string | undefined) => void;
 	readonly setTimeout: (handler: () => void, timeoutMs: number) => TimeoutHandle;
 	readonly clearTimeout: (timeout: TimeoutHandle) => void;
 	readonly triggerCompaction: (ctx: ExtensionContext, onError: (error: Error) => void) => void;
@@ -93,8 +107,8 @@ const defaultStartAsyncJobDependencies: StartAsyncJobDependencies = {
 	getStartRatio,
 	getTimeoutMs,
 	isEnabled,
-	setCliStatus: (ctx, text) => {
-		if (ctx.hasUI) ctx.ui.setStatus(EXTENSION_NAME, text);
+	setCliStatus: (ctx, statusKey, text) => {
+		if (ctx.hasUI) ctx.ui.setStatus(statusKey, text);
 	},
 	setTimeout,
 	clearTimeout,
@@ -119,51 +133,103 @@ export function applyReadyCompaction(
 	state: RuntimeState,
 	deps: StartAsyncJobDependencies = defaultStartAsyncJobDependencies,
 ): boolean {
-	if (state.status !== "ready" || !state.ready) return false;
-	if (shouldReplaceReadyJob(state.ready, ctx, deps.getCompactionSettings(ctx))) {
-		markStale(state, InvalidationReason.SUPERSEDED);
-		deps.setCliStatus(ctx, undefined);
+	if (state.status !== "ready" || !state.ready || state.applyInFlight) return false;
+	const replacementReason = getReadyJobReplacementReason(state.ready, ctx, deps.getCompactionSettings(ctx));
+	if (replacementReason) {
+		markStale(state, replacementReason);
+		setCliStatus(deps, ctx, state, undefined);
 		return false;
 	}
 	if (!canApplyReadyCompaction(ctx) && !shouldForceApplyReadyCompaction(ctx, deps)) {
-		deps.setCliStatus(ctx, "async_compaction ready");
+		setCliStatus(deps, ctx, state, `${state.adapterLabel}: ready`);
 		return false;
 	}
-	const readyJobId = state.ready.jobId;
+	const correlation = getJobCorrelation(state.ready);
 	const shouldAbortBeforeApply = !ctx.isIdle();
-	deps.setCliStatus(ctx, undefined);
+	state.applyInFlight = correlation;
+	setCliStatus(deps, ctx, state, undefined);
 	if (shouldAbortBeforeApply) {
-		state.autoResumeAfterCompactionJobId = readyJobId;
+		state.autoResumeAfterCompaction = correlation;
 		ctx.abort();
 	}
-	deps.triggerCompaction(ctx, (error) => recordApplyError(state, readyJobId, error));
+	deps.triggerCompaction(ctx, (error) => recordApplyError(state, correlation, error));
 	return true;
 }
 
-function recordApplyError(state: RuntimeState, jobId: string, error: Error): void {
-	const isReadyJob = state.status === "ready" && state.jobId === jobId;
-	const isHandedOffJob = state.status === "idle" && state.lastHandedOffJobId === jobId;
-	if (!isReadyJob && !isHandedOffJob) return;
+function setCliStatus(
+	deps: StartAsyncJobDependencies,
+	ctx: ExtensionContext,
+	state: RuntimeState,
+	text: string | undefined,
+): void {
+	deps.setCliStatus(ctx, getStatusKey(state), text);
+}
+
+function getJobCorrelation(job: ReadyJob): JobCorrelation {
+	return {
+		adapterId: job.adapterId,
+		jobId: job.jobId,
+		promptVersion: job.promptVersion,
+	};
+}
+
+function matchesJobCorrelation(
+	left: JobCorrelation | undefined,
+	right: JobCorrelation,
+): boolean {
+	return left?.adapterId === right.adapterId && left.jobId === right.jobId && left.promptVersion === right.promptVersion;
+}
+
+function recordApplyError(state: RuntimeState, correlation: JobCorrelation, error: Error): void {
+	const isApplyingJob = state.status === "ready" && matchesJobCorrelation(state.applyInFlight, correlation);
+	const isHandedOffJob = state.status === "idle" && matchesJobCorrelation(state.lastHandedOff, correlation);
+	if (!isApplyingJob && !isHandedOffJob) return;
+	emitFailure(state, correlation.jobId, "apply", `apply failed: ${error.message}`, "confirmed");
 	state.status = "failed";
 	state.ready = undefined;
 	state.reason = InvalidationReason.FAILED;
 	state.error = `apply failed: ${error.message}`;
-	state.lastHandedOffJobId = undefined;
-	state.autoResumeAfterCompactionJobId = undefined;
+	state.applyInFlight = undefined;
+	state.lastHandedOff = undefined;
+	state.autoResumeAfterCompaction = undefined;
+	state.lifecycleStartedAtMs = undefined;
 }
 
 function recordBackgroundFailure(state: RuntimeState, error: unknown): void {
+	const message = error instanceof Error ? error.message : String(error);
+	if (state.jobId) emitFailure(state, state.jobId, "background", message, "possible");
 	state.status = "failed";
 	state.reason = InvalidationReason.FAILED;
-	state.error = error instanceof Error ? error.message : String(error);
+	state.error = message;
+	state.lifecycleStartedAtMs = undefined;
 }
 
 function recordEmptySummaryFailure(state: RuntimeState): void {
+	if (state.jobId) emitFailure(state, state.jobId, "background", "empty compaction summary", "confirmed");
 	state.abortController = undefined;
 	state.status = "failed";
 	state.ready = undefined;
 	state.reason = InvalidationReason.FAILED;
 	state.error = "empty compaction summary";
+	state.lifecycleStartedAtMs = undefined;
+}
+
+function emitFailure(
+	state: RuntimeState,
+	jobId: string,
+	phase: "background" | "apply",
+	error: string,
+	wastedWork: "possible" | "confirmed",
+): void {
+	emitLifecycleEvent(state.lifecycleObserver, {
+		event: "failed",
+		adapterId: state.adapterId,
+		jobId,
+		durationMs: getLifecycleDurationMs(state.lifecycleStartedAtMs),
+		phase,
+		error,
+		wastedWork,
+	});
 }
 
 function storeReadyResult(state: RuntimeState, snapshot: Snapshot, result: CompactionResult): void {
@@ -173,21 +239,29 @@ function storeReadyResult(state: RuntimeState, snapshot: Snapshot, result: Compa
 	state.status = "ready";
 	state.ready = {
 		...snapshot,
+		adapterId: state.adapterId,
 		result: {
 			...result,
 			details: {
 				...piDetails,
 				asyncPrefixCompaction: {
+					adapterId: state.adapterId,
 					jobId: snapshot.jobId,
 					snapshotLeafId: snapshot.snapshotLeafId,
 					modelKey: snapshot.modelKey,
 					thinkingLevel: snapshot.thinkingLevel,
 					settingsKey: snapshot.settingsKey,
-					promptVersion: SUMMARY_PROMPT_VERSION,
+					promptVersion: snapshot.promptVersion,
 				},
 			} satisfies AsyncCompactionDetails,
 		},
 	};
+	emitLifecycleEvent(state.lifecycleObserver, {
+		event: "ready",
+		adapterId: state.adapterId,
+		jobId: snapshot.jobId,
+		durationMs: getLifecycleDurationMs(state.lifecycleStartedAtMs),
+	});
 }
 
 function scheduleTimeout(
@@ -205,7 +279,7 @@ function scheduleTimeout(
 		abortController.abort();
 		if (state.status !== "pending" || state.jobId !== jobId) return;
 		markStale(state, InvalidationReason.TIMEOUT);
-		deps.setCliStatus(ctx, undefined);
+		setCliStatus(deps, ctx, state, undefined);
 	}, timeoutMs);
 }
 
@@ -234,8 +308,16 @@ function markPending(state: RuntimeState, jobId: string, abortController: AbortC
 	state.ready = undefined;
 	state.reason = undefined;
 	state.error = undefined;
-	state.lastHandedOffJobId = undefined;
-	state.autoResumeAfterCompactionJobId = undefined;
+	state.applyInFlight = undefined;
+	state.lastHandedOff = undefined;
+	state.autoResumeAfterCompaction = undefined;
+	state.lifecycleStartedAtMs = Date.now();
+	emitLifecycleEvent(state.lifecycleObserver, {
+		event: "started",
+		adapterId: state.adapterId,
+		jobId,
+		startedAtMs: state.lifecycleStartedAtMs,
+	});
 }
 
 function getAdapter(deps: StartAsyncJobDependencies): AsyncCompactionAdapter<unknown, unknown> {
@@ -260,12 +342,15 @@ export function startAsyncJobWithDeps(
 	}
 
 	if (state.status === "pending") return "already_pending";
-	if (state.status === "ready" && state.ready && !shouldReplaceReadyJob(state.ready, ctx, settings)) {
+	const readyReplacementReason = state.ready
+		? getReadyJobReplacementReason(state.ready, ctx, settings)
+		: InvalidationReason.SUPERSEDED;
+	if (state.status === "ready" && state.ready && !readyReplacementReason) {
 		if (options.force) applyReadyCompaction(ctx, state, deps);
 		return "ready_reused";
 	}
 	if (state.status === "ready") {
-		markStale(state, InvalidationReason.SUPERSEDED);
+		markStale(state, readyReplacementReason ?? InvalidationReason.SUPERSEDED);
 	}
 
 	const adapter = options.adapter ?? getAdapter(deps);
@@ -276,7 +361,7 @@ export function startAsyncJobWithDeps(
 	const abortController = new AbortController();
 	const snapshot = adapter.createSnapshot({ ctx, jobId, prepared, settings });
 	markPending(state, jobId, abortController);
-	deps.setCliStatus(ctx, "async_compaction ...");
+	setCliStatus(deps, ctx, state, `${state.adapterLabel}: preparing`);
 
 	const timeoutMs = options.timeoutMs ?? deps.getTimeoutMs();
 	let timedOut = false;
@@ -290,14 +375,14 @@ export function startAsyncJobWithDeps(
 			if (state.status !== "pending" || state.jobId !== jobId) return;
 			if (abortController.signal.aborted) {
 				markStale(state, getAbortInvalidationReason(timedOut));
-				deps.setCliStatus(ctx, undefined);
+				setCliStatus(deps, ctx, state, undefined);
 				return;
 			}
 
 			const result = adapter.toCompaction({ prepared, snapshot, result: adapterResult });
 			if (!result.summary.trim()) {
 				recordEmptySummaryFailure(state);
-				deps.setCliStatus(ctx, undefined);
+				setCliStatus(deps, ctx, state, undefined);
 				return;
 			}
 
@@ -309,14 +394,13 @@ export function startAsyncJobWithDeps(
 			if (state.status !== "pending" || state.jobId !== jobId) return;
 			state.abortController = undefined;
 			if (abortController.signal.aborted) {
-				state.status = "stale";
-				state.reason = getAbortInvalidationReason(timedOut);
+				markStale(state, getAbortInvalidationReason(timedOut));
 				state.error = undefined;
-				deps.setCliStatus(ctx, undefined);
+				setCliStatus(deps, ctx, state, undefined);
 				return;
 			}
 			recordBackgroundFailure(state, error);
-			deps.setCliStatus(ctx, undefined);
+			setCliStatus(deps, ctx, state, undefined);
 		});
 	return "started";
 }

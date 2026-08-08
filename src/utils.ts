@@ -2,8 +2,8 @@ import type { Api, Model, Usage } from "@earendil-works/pi-ai";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext, calculateContextTokens, estimateTokens, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_START_RATIO, DEFAULT_TIMEOUT_MS, SUMMARY_PROMPT_VERSION } from "./constants";
-import type { AsyncCompactionDetails, ResolvedCompactionSettings } from "./types";
+import { DEFAULT_START_RATIO, DEFAULT_TIMEOUT_MS } from "./constants";
+import type { AsyncCompactionMarker, ResolvedCompactionSettings } from "./types";
 
 type StartWindow =
 	| {
@@ -62,22 +62,24 @@ export function settingsKey(settings: ResolvedCompactionSettings): string {
 	});
 }
 
-export function getAsyncCompactionMarker(value: unknown): AsyncCompactionDetails["asyncPrefixCompaction"] | undefined {
+export function getAsyncCompactionMarker(value: unknown): AsyncCompactionMarker | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const marker = (value as Record<string, unknown>).asyncPrefixCompaction;
 	if (!marker || typeof marker !== "object" || Array.isArray(marker)) return undefined;
 	const fields = marker as Record<string, unknown>;
-	if (fields.promptVersion !== SUMMARY_PROMPT_VERSION) return undefined;
 	if (
+		typeof fields.adapterId !== "string" ||
 		typeof fields.jobId !== "string" ||
 		typeof fields.snapshotLeafId !== "string" ||
 		typeof fields.modelKey !== "string" ||
 		!isThinkingLevel(fields.thinkingLevel) ||
-		typeof fields.settingsKey !== "string"
+		typeof fields.settingsKey !== "string" ||
+		typeof fields.promptVersion !== "string"
 	) {
 		return undefined;
 	}
 	return {
+		adapterId: fields.adapterId,
 		jobId: fields.jobId,
 		snapshotLeafId: fields.snapshotLeafId,
 		modelKey: fields.modelKey,

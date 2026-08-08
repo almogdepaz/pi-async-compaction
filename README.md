@@ -42,7 +42,7 @@ pi install npm:pi-async-compaction
 From git:
 
 ```bash
-pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.4
+pi install git:github.com/almogdepaz/pi-async-compaction@main
 ```
 
 Local development:
@@ -64,19 +64,19 @@ pi -e .
 When the context crosses the async start window, the extension starts a background summary and keeps chat output quiet:
 
 ```text
-status: async_compaction ...
+status: built-in Pi compaction: preparing
 ```
 
 When the summary is ready but Pi is below the async threshold, not abortable, or has queued messages, it waits instead of interrupting the active turn:
 
 ```text
-status: async_compaction ready
+status: built-in Pi compaction: ready
 ```
 
 At the next safe idle boundary, Pi's normal compaction flow consumes the ready summary and the extension emits a compact notification:
 
 ```text
-Applied ready async compaction
+Applied ready built-in Pi compaction
 ```
 
 The static preview above is also used for the pi.dev package gallery.
@@ -90,7 +90,7 @@ Async compaction precomputes summaries early, then applies them only at a safe b
 3. when the summary is ready, the extension applies it immediately if Pi is idle and has no queued messages
 4. if Pi is actively responding, abortable, has no queued messages, and is still over the async threshold, it aborts and triggers Pi compaction
 5. after Pi persists that extension-provided compaction, the extension sends `continue` to resume work
-6. otherwise the ready summary is kept for later and Pi's status bar shows `async_compaction ready`; after `agent_end`, the extension briefly retries while Pi settles
+6. otherwise the ready summary is kept for later and Pi's status bar shows `<adapter label>: ready`; after `agent_end`, the extension briefly retries while Pi settles
 7. Pi fires `session_before_compact`; if the ready async summary validates, the extension returns it
 8. otherwise Pi falls back to normal synchronous compaction
 
@@ -168,6 +168,23 @@ PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS=300000
 
 The extension is enabled by default; set `PI_ASYNC_PREFIX_COMPACTION=0` to disable. Reserve and keep-recent tokens come from Pi's normal `compaction` settings. Automatic background jobs only start when `floor(contextWindow * START_RATIO) < tokens <= contextWindow - reserveTokens`; if that window is empty, use a larger context model, lower the start ratio, or lower Pi's reserve tokens. Pi's normal compaction threshold remains `contextWindow - reserveTokens`; the async start ratio controls both how early the background summary is prepared and when a ready summary may abort-and-compact an active turn.
 
+## lifecycle diagnostics
+
+Package authors using `pi-async-compaction/core` can measure lifecycle behavior without enabling a telemetry service. Pass an observer when registering the adapter:
+
+```ts
+import { registerAsyncCompaction } from "pi-async-compaction/core";
+import type { AsyncCompactionLifecycleEvent } from "pi-async-compaction/core";
+
+const observe = (event: AsyncCompactionLifecycleEvent): void => {
+  console.info(JSON.stringify(event));
+};
+
+registerAsyncCompaction(pi, adapter, { onLifecycleEvent: observe });
+```
+
+Events are `started`, `ready`, `handed_off`, `invalidated`, and `failed`. Every event identifies the adapter and job; terminal events carry `durationMs`. Invalidations and failures include a `wastedWork` confidence (`possible` or `confirmed`), rather than a cost estimate. The observer is synchronous and opt-in: keep it cheap, avoid recording prompts or summaries, and do not treat duration or wasted-work confidence as provider billing. Observer exceptions are isolated from compaction and reported with `console.warn`.
+
 ## roadmap
 
 - add a real terminal gif for the demo section
@@ -184,7 +201,7 @@ bun run check
 bun pm pack --dry-run
 ```
 
-This package is tested against Pi `0.80.3`. The Pi core packages are declared as peer dependencies because Pi provides them at runtime.
+This package is tested against Pi `0.80.3` and `0.84.1`. Its declared peer range is `>=0.80.3 <0.85.0`; Pi provides the core packages at runtime.
 
 ## changelog
 

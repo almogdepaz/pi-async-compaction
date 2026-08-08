@@ -2,11 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { InvalidationReason } from "../src/constants";
 import { startAsyncJobWithDeps } from "../src/job";
 import { createRuntimeState } from "../src/runtime-state";
+import type { AsyncCompactionLifecycleEvent } from "../src/core";
 import { asyncJobContext, asyncJobDeps, compactableEntries } from "./test-fixtures";
 
 describe("startAsyncJob lifecycle", () => {
 	test("records apply failures reported by Pi compaction", async () => {
-		const state = createRuntimeState();
+		const events: AsyncCompactionLifecycleEvent[] = [];
+		const state = createRuntimeState(undefined, undefined, (event) => events.push(event));
 
 		startAsyncJobWithDeps(
 			asyncJobContext(compactableEntries()),
@@ -18,6 +20,12 @@ describe("startAsyncJob lifecycle", () => {
 		expect(state.status).toBe("failed");
 		expect(state.reason).toBe(InvalidationReason.FAILED);
 		expect(state.error).toBe("apply failed: already compacted");
+		expect(events).toContainEqual(expect.objectContaining({
+			event: "failed",
+			phase: "apply",
+			error: "apply failed: already compacted",
+			wastedWork: "confirmed",
+		}));
 	});
 
 	test("records apply failures after a ready job has been handed off", async () => {
@@ -32,11 +40,15 @@ describe("startAsyncJob lifecycle", () => {
 		await Promise.resolve();
 
 		expect(state.status).toBe("ready");
-		expect(state.jobId).toBe("async-prefix-compaction-1");
+		expect(state.jobId).toBe("async-prefix-compaction:builtin-pi-compaction:1");
 		state.status = "idle";
 		state.ready = undefined;
 		state.reason = undefined;
-		state.lastHandedOffJobId = "async-prefix-compaction-1";
+		state.lastHandedOff = {
+			adapterId: state.adapterId,
+			jobId: state.jobId ?? "",
+			promptVersion: "pi-compact-background-v1",
+		};
 
 		onApplyError?.(new Error("render failed"));
 
@@ -46,7 +58,8 @@ describe("startAsyncJob lifecycle", () => {
 	});
 
 	test("records background compaction failures", async () => {
-		const state = createRuntimeState();
+		const events: AsyncCompactionLifecycleEvent[] = [];
+		const state = createRuntimeState(undefined, undefined, (event) => events.push(event));
 
 		startAsyncJobWithDeps(
 			asyncJobContext(compactableEntries()),
@@ -58,6 +71,12 @@ describe("startAsyncJob lifecycle", () => {
 		expect(state.status).toBe("failed");
 		expect(state.reason).toBe(InvalidationReason.FAILED);
 		expect(state.error).toBe("auth failed");
+		expect(events).toContainEqual(expect.objectContaining({
+			event: "failed",
+			phase: "background",
+			error: "auth failed",
+			wastedWork: "possible",
+		}));
 	});
 
 	test("records empty background compaction summaries as actionable failures", async () => {

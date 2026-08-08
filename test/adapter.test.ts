@@ -7,7 +7,6 @@ import { asyncJobContext, asyncJobDeps, compactableEntries, settings } from "./t
 
 describe("internal async compaction adapter seam", () => {
 	test("startAsyncJob delegates prepare, run, and result conversion to the configured adapter", async () => {
-		const state = createRuntimeState();
 		const calls: string[] = [];
 		const preparation: LocalCompactionPreparation = {
 			firstKeptEntryId: "u2",
@@ -51,6 +50,7 @@ describe("internal async compaction adapter seam", () => {
 			},
 		};
 
+		const state = createRuntimeState(adapter.id, adapter.label);
 		const outcome = startAsyncJobWithDeps(
 			asyncJobContext(compactableEntries()),
 			state,
@@ -67,6 +67,10 @@ describe("internal async compaction adapter seam", () => {
 		expect(calls).toEqual(["prepare", "createSnapshot", "run", "toCompaction"]);
 		expect(state.status).toBe("ready");
 		expect(state.ready?.result.summary).toBe("adapter summary");
-		expect(state.ready?.result.details?.asyncPrefixCompaction.jobId).toBe("async-prefix-compaction-1");
+		expect(state.ready?.result.details?.asyncPrefixCompaction).toMatchObject({
+			adapterId: "test-adapter",
+			jobId: "async-prefix-compaction:test-adapter:1",
+			promptVersion: "test-prompt-v1",
+		});
 	});
 });

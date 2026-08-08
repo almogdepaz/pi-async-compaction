@@ -1,10 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AsyncCompactionAdapter } from "./adapter";
-import { APPLY_RETRY_DELAY_MS, APPLY_RETRY_LIMIT, AUTO_RESUME_PROMPT, EXTENSION_NAME, InvalidationReason } from "./constants";
+import { APPLY_RETRY_DELAY_MS, APPLY_RETRY_LIMIT, AUTO_RESUME_PROMPT, InvalidationReason } from "./constants";
+import { emitLifecycleEvent, getLifecycleDurationMs } from "./diagnostics";
 import { applyReadyCompaction, startAsyncJob } from "./job";
 import type { StartAsyncJobOutcome } from "./job";
-import { createRuntimeState, markStale } from "./runtime-state";
-import type { RuntimeState } from "./types";
+import { createRuntimeState, getStatusKey, markStale } from "./runtime-state";
+import type { AsyncCompactionMarker, JobCorrelation, RuntimeState } from "./types";
 import { getAsyncCompactionMarker } from "./utils";
 import { validateReadyJob } from "./validation";
 
@@ -15,11 +16,13 @@ export type {
 	AdapterSnapshotInput,
 	AsyncCompactionAdapter,
 } from "./adapter";
+export type { AsyncCompactionLifecycleEvent, AsyncCompactionLifecycleObserver, AsyncCompactionWastedWork } from "./diagnostics";
 export type { Snapshot } from "./types";
 
 export interface RegisterAsyncCompactionOptions {
 	readonly commandName?: string | false;
 	readonly commandDescription?: string;
+	readonly onLifecycleEvent?: import("./diagnostics").AsyncCompactionLifecycleObserver;
 }
 
 export interface AsyncCompactionCoreDependencies {
@@ -33,6 +36,8 @@ const defaultCoreDependencies: AsyncCompactionCoreDependencies = {
 };
 
 const DEFAULT_COMMAND_DESCRIPTION = "Start async compaction now";
+const SAFE_ADAPTER_ID = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
+const registeredAdapterIds = new WeakMap<object, Set<string>>();
 
 function eraseAdapter<TPrepared, TResult>(
 	adapter: AsyncCompactionAdapter<TPrepared, TResult>,
@@ -40,8 +45,31 @@ function eraseAdapter<TPrepared, TResult>(
 	return adapter as unknown as AsyncCompactionAdapter<unknown, unknown>;
 }
 
-function clearCliStatus(ctx: ExtensionContext): void {
-	if (ctx.hasUI) ctx.ui.setStatus(EXTENSION_NAME, undefined);
+function clearCliStatus(ctx: ExtensionContext, state: RuntimeState): void {
+	if (ctx.hasUI) ctx.ui.setStatus(getStatusKey(state), undefined);
+}
+
+function getJobCorrelation(marker: AsyncCompactionMarker): JobCorrelation {
+	return {
+		adapterId: marker.adapterId,
+		jobId: marker.jobId,
+		promptVersion: marker.promptVersion,
+	};
+}
+
+function matchesJobCorrelation(
+	left: JobCorrelation | undefined,
+	right: JobCorrelation,
+): boolean {
+	return left?.adapterId === right.adapterId && left.jobId === right.jobId && left.promptVersion === right.promptVersion;
+}
+
+function validateAdapterRegistration(pi: ExtensionAPI, adapter: AsyncCompactionAdapter<unknown, unknown>): void {
+	if (!SAFE_ADAPTER_ID.test(adapter.id)) throw new Error(`unsafe adapter id: ${adapter.id}`);
+	const ids = registeredAdapterIds.get(pi) ?? new Set<string>();
+	if (ids.has(adapter.id)) throw new Error(`adapter id already registered: ${adapter.id}`);
+	ids.add(adapter.id);
+	registeredAdapterIds.set(pi, ids);
 }
 
 function formatManualStartOutcome(outcome: StartAsyncJobOutcome): string | undefined {
@@ -68,7 +96,7 @@ function collapseCompactionRender(ctx: ExtensionContext): void {
 function invalidateActiveJob(ctx: ExtensionContext, state: RuntimeState, reason: InvalidationReason): void {
 	if (state.status !== "pending" && state.status !== "ready") return;
 	markStale(state, reason);
-	clearCliStatus(ctx);
+	clearCliStatus(ctx, state);
 }
 
 function scheduleReadyCompactionApply(
@@ -99,9 +127,10 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 	options: RegisterAsyncCompactionOptions = {},
 	injectedDeps: Partial<AsyncCompactionCoreDependencies> = {},
 ): void {
-	const deps = { ...defaultCoreDependencies, ...injectedDeps };
-	const state = createRuntimeState();
 	const jobAdapter = eraseAdapter(adapter);
+	validateAdapterRegistration(pi, jobAdapter);
+	const deps = { ...defaultCoreDependencies, ...injectedDeps };
+	const state = createRuntimeState(adapter.id, adapter.label, options.onLifecycleEvent);
 
 	pi.on("turn_end", (_event, ctx) => {
 		deps.startAsyncJob(ctx, state, { adapter: jobAdapter, force: false });
@@ -128,7 +157,7 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 		if (!ready || state.status !== "ready") {
 			if (state.status === "pending") {
 				markStale(state, InvalidationReason.SYNC_FALLBACK);
-				clearCliStatus(ctx);
+				clearCliStatus(ctx, state);
 			}
 			return;
 		}
@@ -136,36 +165,54 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 		const invalidReason = validateReadyJob(ready, event, ctx);
 		if (invalidReason) {
 			markStale(state, invalidReason);
-			clearCliStatus(ctx);
+			clearCliStatus(ctx, state);
 			return;
 		}
 
 		state.status = "idle";
 		state.ready = undefined;
 		state.reason = undefined;
-		state.lastHandedOffJobId = ready.jobId;
-		clearCliStatus(ctx);
+		state.applyInFlight = undefined;
+		state.lastHandedOff = {
+			adapterId: ready.adapterId,
+			jobId: ready.jobId,
+			promptVersion: ready.promptVersion,
+		};
+		emitLifecycleEvent(state.lifecycleObserver, {
+			event: "handed_off",
+			adapterId: ready.adapterId,
+			jobId: ready.jobId,
+			durationMs: getLifecycleDurationMs(state.lifecycleStartedAtMs),
+		});
+		clearCliStatus(ctx, state);
 		collapseCompactionRender(ctx);
 		return { compaction: ready.result };
 	});
 
 	pi.on("session_compact", (event, ctx) => {
 		const marker = event.fromExtension ? getAsyncCompactionMarker(event.compactionEntry.details) : undefined;
-		if (!marker) return;
+		if (!marker || marker.adapterId !== state.adapterId) return;
 
-		if (state.lastHandedOffJobId === marker.jobId) state.lastHandedOffJobId = undefined;
-		const shouldAutoResume = state.autoResumeAfterCompactionJobId === marker.jobId;
-		if (shouldAutoResume) state.autoResumeAfterCompactionJobId = undefined;
+		const correlation = getJobCorrelation(marker);
+		if (!matchesJobCorrelation(state.lastHandedOff, correlation)) return;
+		state.lastHandedOff = undefined;
+		state.lifecycleStartedAtMs = undefined;
+		const shouldAutoResume = matchesJobCorrelation(state.autoResumeAfterCompaction, correlation);
+		if (shouldAutoResume) state.autoResumeAfterCompaction = undefined;
 		if (ctx.hasUI) {
 			const ui = ctx.ui;
-			setTimeout(() => ui.notify("Applied ready async compaction", "info"), 0);
+			setTimeout(() => ui.notify(`Applied ready ${state.adapterLabel}`, "info"), 0);
 		}
-		if (shouldAutoResume) setTimeout(() => pi.sendUserMessage(AUTO_RESUME_PROMPT), 0);
+		if (shouldAutoResume) {
+			setTimeout(() => {
+				if (!ctx.hasPendingMessages()) pi.sendUserMessage(AUTO_RESUME_PROMPT);
+			}, 0);
+		}
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		markStale(state, InvalidationReason.CANCELLED);
-		clearCliStatus(ctx);
+		clearCliStatus(ctx, state);
 	});
 
 	if (options.commandName) {

@@ -2,12 +2,14 @@ import { describe, expect, test } from "bun:test";
 import type { CompactionResult } from "@earendil-works/pi-coding-agent";
 import { startAsyncJobWithDeps } from "../src/job";
 import { createRuntimeState } from "../src/runtime-state";
+import type { AsyncCompactionLifecycleEvent } from "../src/core";
 import { settingsKey } from "../src/utils";
 import { assistantEntry, asyncJobContext, asyncJobDeps, compactableEntries, readyJob, settings, userEntry } from "./test-fixtures";
 
 describe("startAsyncJob lifecycle", () => {
 	test("replaces an unchanged-leaf ready job when settings drift", () => {
-		const state = createRuntimeState();
+		const events: AsyncCompactionLifecycleEvent[] = [];
+		const state = createRuntimeState(undefined, undefined, (event) => events.push(event));
 		state.status = "ready";
 		state.jobId = "async-prefix-compaction-1";
 		state.jobCounter = 1;
@@ -26,7 +28,12 @@ describe("startAsyncJob lifecycle", () => {
 
 		expect(outcome).toBe("started");
 		expect(String(state.status)).toBe("pending");
-		expect(state.jobId).toBe("async-prefix-compaction-2");
+		expect(state.jobId).toBe("async-prefix-compaction:builtin-pi-compaction:2");
+		expect(events).toContainEqual(expect.objectContaining({
+			event: "invalidated",
+			reason: "settings_changed",
+			wastedWork: "confirmed",
+		}));
 	});
 
 	test("replaces a ready job when the current branch no longer contains its snapshot boundary", () => {
@@ -50,7 +57,7 @@ describe("startAsyncJob lifecycle", () => {
 
 		expect(outcome).toBe("started");
 		expect(String(state.status)).toBe("pending");
-		expect(state.jobId).toBe("async-prefix-compaction-2");
+		expect(state.jobId).toBe("async-prefix-compaction:builtin-pi-compaction:2");
 		expect(state.ready).toBeUndefined();
 	});
 
@@ -60,6 +67,7 @@ describe("startAsyncJob lifecycle", () => {
 		state.jobId = "async-prefix-compaction-1";
 		state.jobCounter = 1;
 		state.ready = {
+			adapterId: "builtin-pi-compaction",
 			jobId: "async-prefix-compaction-1",
 			sessionId: "session-1",
 			snapshotLeafId: "a1",
@@ -76,6 +84,7 @@ describe("startAsyncJob lifecycle", () => {
 					readFiles: [],
 					modifiedFiles: [],
 					asyncPrefixCompaction: {
+						adapterId: "builtin-pi-compaction",
 						jobId: "async-prefix-compaction-1",
 						snapshotLeafId: "a1",
 						modelKey: "openai/test-model",
@@ -96,7 +105,7 @@ describe("startAsyncJob lifecycle", () => {
 		);
 
 		expect(String(state.status)).toBe("pending");
-		expect(state.jobId).toBe("async-prefix-compaction-2");
+		expect(state.jobId).toBe("async-prefix-compaction:builtin-pi-compaction:2");
 		expect(state.ready).toBeUndefined();
 	});
 });
