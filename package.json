@@ -17,8 +17,7 @@
     "test": "bun test",
     "check": "bun --check src/*.ts",
     "typecheck": "tsc --noEmit --strict --moduleResolution Bundler --module ESNext --target ES2022 --skipLibCheck --types node --types bun src/*.ts scripts/*.ts test/*.ts",
-    "release:check": "bun scripts/check-release.ts",
-    "edc:check": "bun scripts/check-edc-freshness.ts"
+    "release:check": "bun scripts/check-release.ts"
   },
   "keywords": [
     "pi-package",

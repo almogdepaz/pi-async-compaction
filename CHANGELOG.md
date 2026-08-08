@@ -8,7 +8,7 @@
 - added direct configuration and validation-invalidation regressions.
 - updated development compatibility to Pi `0.84.1`, verified the supported `0.80.3`–`0.84.1` range, and normalize nullable provider headers at Pi's typed boundary.
 - added dependency overrides that remove the package's currently resolvable audit advisories.
-- added tagged/unreleased release-consistency and GitHub CI gates for locked verification, real parity, audit, package contents, routed-source EDC freshness, and the supported Pi matrix.
+- added tagged/unreleased release-consistency and GitHub CI gates for locked verification, real parity, audit, package contents, and the supported Pi matrix.
 
 ## 0.1.6 — 2026-07-19
 

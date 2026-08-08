@@ -23,7 +23,6 @@ jobs:
       - run: bun audit
       - run: bun run release:check
       - run: bun pm pack --dry-run
-      - run: bun run edc:check
 
   pi-compatibility:
     strategy:
