@@ -13,6 +13,15 @@ describe("checkReleaseConsistency", () => {
 		})).toEqual([]);
 	});
 
+	test("accepts release preparation before the matching Git tag exists", () => {
+		expect(checkReleaseConsistency({
+			version,
+			tagsAtHead: [],
+			changelog: "# changelog\n\n## 0.1.7 — 2026-08-11\n",
+			readme: "pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.7",
+		})).toEqual([]);
+	});
+
 	test("accepts a tagged release with a dated changelog and matching Git tag", () => {
 		expect(checkReleaseConsistency({
 			version,

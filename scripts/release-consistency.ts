@@ -13,12 +13,15 @@ export function checkReleaseConsistency(input: ReleaseConsistencyInput): string[
 	}
 
 	const releaseTag = `v${input.version}`;
-	if (input.tagsAtHead.includes(releaseTag)) {
-		const datedHeading = new RegExp(`^## ${escapeRegExp(input.version)} — \\d{4}-\\d{2}-\\d{2}$`, "m");
-		if (!datedHeading.test(input.changelog)) {
+	const datedHeading = new RegExp(`^## ${escapeRegExp(input.version)} — \\d{4}-\\d{2}-\\d{2}$`, "m");
+	const hasDatedHeading = datedHeading.test(input.changelog);
+	const taggedInstall = `pi install git:github.com/almogdepaz/pi-async-compaction@${releaseTag}`;
+	const hasTaggedInstall = input.readme.includes(taggedInstall);
+	if (input.tagsAtHead.includes(releaseTag) || hasDatedHeading || hasTaggedInstall) {
+		if (!hasDatedHeading) {
 			failures.push(`CHANGELOG.md must include a dated ${input.version} heading for ${releaseTag}`);
 		}
-		if (!input.readme.includes(`pi install git:github.com/almogdepaz/pi-async-compaction@${releaseTag}`)) {
+		if (!hasTaggedInstall) {
 			failures.push(`README.md must install the tagged release from @${releaseTag}`);
 		}
 		return failures;

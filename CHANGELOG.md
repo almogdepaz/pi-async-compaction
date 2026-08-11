@@ -1,6 +1,6 @@
 # changelog
 
-## 0.1.7 — unreleased
+## 0.1.7 — 2026-08-11
 
 - fixed adapter isolation: status keys and job IDs are adapter-scoped; persisted markers now correlate adapter ID, job ID, and prompt version before notification or auto-resume.
 - added abort-and-compact handling for eligible over-threshold active turns; made ready-result application idempotent and preserved queued user work by re-checking for pending messages before deferred auto-resume.
