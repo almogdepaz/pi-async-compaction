@@ -68,7 +68,7 @@ describe("startAsyncJob lifecycle", () => {
 		const statusValues: Array<string | undefined> = [];
 		const never = new Promise<CompactionResult>(() => {});
 		const { deps, triggerTimeout } = asyncJobDepsWithCapturedTimeout({
-			setCliStatus: (_ctx, text) => statusValues.push(text),
+			setCliStatus: (_ctx, _statusKey, text) => statusValues.push(text),
 			buildAsyncCompactionResult: () => never,
 		});
 
@@ -77,6 +77,6 @@ describe("startAsyncJob lifecycle", () => {
 
 		expect(state.status).toBe("stale");
 		expect(state.reason).toBe(InvalidationReason.TIMEOUT);
-		expect(statusValues).toEqual(["async_compaction ...", undefined]);
+		expect(statusValues).toEqual(["built-in Pi compaction: preparing", undefined]);
 	});
 });

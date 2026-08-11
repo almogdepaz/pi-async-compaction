@@ -1,4 +1,6 @@
 export const EXTENSION_NAME = "async-prefix-compaction";
+export const BUILTIN_ADAPTER_ID = "builtin-pi-compaction";
+export const BUILTIN_ADAPTER_LABEL = "built-in Pi compaction";
 export const SUMMARY_PROMPT_VERSION = "pi-compact-background-v1";
 export const DEFAULT_START_RATIO = 0.8;
 export const DEFAULT_TIMEOUT_MS = 300_000;

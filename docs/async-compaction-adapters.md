@@ -104,11 +104,28 @@ export default function myExtension(pi: ExtensionAPI): void {
 - starting work after `turn_end` once the async threshold is crossed
 - one-job state: `idle`, `pending`, `ready`, `stale`, `failed`
 - timeout and abort handling
-- status line: `async_compaction ...` and `async_compaction ready`
+- adapter-scoped status line: `<adapter label>: preparing` and `<adapter label>: ready`
+- adapter-scoped job IDs and marker ownership (`adapterId`, `jobId`, and `promptVersion`)
 - ready apply when idle, plus abort-and-compact with auto-resume for abortable active turns over the async threshold when no messages are queued
 - `session_before_compact` handoff
 - stale checks for session/model/settings/branch drift
 - preserving your `details` while adding `details.asyncPrefixCompaction`
+
+## lifecycle diagnostics
+
+Pass `onLifecycleEvent` to observe one adapter registration without adding a runtime dependency:
+
+```ts
+import type { AsyncCompactionLifecycleEvent } from "pi-async-compaction/core";
+
+registerAsyncCompaction(pi, adapter, {
+  onLifecycleEvent(event: AsyncCompactionLifecycleEvent) {
+    writeLifecycleEvent(event);
+  },
+});
+```
+
+The structured events are `started`, `ready`, `handed_off`, `invalidated`, and `failed`. They include `adapterId` and `jobId`; terminal events include `durationMs`. `invalidated` and `failed` events include `wastedWork`: `possible` means background work may have reached a provider, while `confirmed` means a ready result was discarded or an apply failed. These are lifecycle signals, not provider cost or token accounting. Keep observers synchronous and cheap; never send prompt or summary content unless your own privacy policy permits it. An observer exception is caught, logged through `console.warn`, and cannot stop compaction.
 
 ## install while developing
 

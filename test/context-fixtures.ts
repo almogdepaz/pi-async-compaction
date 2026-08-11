@@ -2,6 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionBeforeCompactEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
 import asyncPrefixCompaction from "../src/index";
 import { createBuiltinPiCompactionAdapter } from "../src/adapter";
+import { BUILTIN_ADAPTER_ID, EXTENSION_NAME, SUMMARY_PROMPT_VERSION } from "../src/constants";
 import { startAsyncJobWithDeps } from "../src/job";
 import { validateReadyJob } from "../src/validation";
 import { assistantEntry, userEntry } from "./entry-fixtures";
@@ -15,12 +16,13 @@ export const settings = {
 export function ownAsyncMarker(): Record<string, unknown> {
 	return {
 		asyncPrefixCompaction: {
-			jobId: "async-prefix-compaction-1",
+			adapterId: BUILTIN_ADAPTER_ID,
+			jobId: `${EXTENSION_NAME}:${BUILTIN_ADAPTER_ID}:1`,
 			snapshotLeafId: "a1",
 			modelKey: "openai/test-model",
 			thinkingLevel: "off",
 			settingsKey: JSON.stringify(settings),
-			promptVersion: "pi-compact-background-v1",
+			promptVersion: SUMMARY_PROMPT_VERSION,
 		},
 	};
 }
@@ -162,6 +164,7 @@ export function extensionHarness(deps?: Parameters<typeof asyncPrefixCompaction>
 	} as unknown as ExtensionAPI;
 	const ctx = {
 		hasUI: true,
+		hasPendingMessages: () => false,
 		ui: {
 			notify: (message: string) => {
 				notifyMessages.push(message);
@@ -182,7 +185,8 @@ export function extensionHarness(deps?: Parameters<typeof asyncPrefixCompaction>
 
 export function readyJob(overrides: Partial<Parameters<typeof validateReadyJob>[0]> = {}): Parameters<typeof validateReadyJob>[0] {
 	return {
-		jobId: "async-prefix-compaction-1",
+		adapterId: BUILTIN_ADAPTER_ID,
+		jobId: `${EXTENSION_NAME}:${BUILTIN_ADAPTER_ID}:1`,
 		sessionId: "session-1",
 		snapshotLeafId: "a2",
 		firstKeptEntryId: "u2",
@@ -198,12 +202,13 @@ export function readyJob(overrides: Partial<Parameters<typeof validateReadyJob>[
 				readFiles: [],
 				modifiedFiles: [],
 				asyncPrefixCompaction: {
-					jobId: "async-prefix-compaction-1",
+					adapterId: BUILTIN_ADAPTER_ID,
+					jobId: `${EXTENSION_NAME}:${BUILTIN_ADAPTER_ID}:1`,
 					snapshotLeafId: "a2",
 					modelKey: "openai/test-model",
 					thinkingLevel: "off",
 					settingsKey: JSON.stringify(settings),
-					promptVersion: "pi-compact-background-v1",
+					promptVersion: SUMMARY_PROMPT_VERSION,
 				},
 			},
 		},

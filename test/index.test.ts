@@ -83,7 +83,7 @@ describe("extension hooks", () => {
 		expect(notifyMessages).toEqual([]);
 	});
 
-	test("defers notification until after Pi finishes its compaction render", async () => {
+	test("does not claim a structurally valid marker from another adapter", async () => {
 		const { handlers, notifyMessages, ctx } = extensionHarness();
 		const handler = handlers.get("session_compact");
 		if (!handler) throw new Error("session_compact handler was not registered");
@@ -91,14 +91,54 @@ describe("extension hooks", () => {
 		handler(
 			{
 				fromExtension: true,
-				compactionEntry: { details: ownAsyncMarker() },
+				compactionEntry: {
+					details: {
+						asyncPrefixCompaction: {
+							jobId: "async-prefix-compaction:builtin-pi-compaction:1",
+							snapshotLeafId: "a1",
+							modelKey: "openai/test-model",
+							thinkingLevel: "off",
+							settingsKey: JSON.stringify({ enabled: true, reserveTokens: 100, keepRecentTokens: 1 }),
+							promptVersion: "pi-compact-background-v1",
+							adapterId: "other-adapter",
+						},
+					},
+				},
 			},
 			ctx,
 		);
 
-		expect(notifyMessages).toEqual([]);
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(notifyMessages).toEqual(["Applied ready async compaction"]);
+		expect(notifyMessages).toEqual([]);
+	});
+
+	test("does not claim an uncorrelated marker from its own adapter", async () => {
+		const { handlers, notifyMessages, ctx } = extensionHarness();
+		const handler = handlers.get("session_compact");
+		if (!handler) throw new Error("session_compact handler was not registered");
+
+		handler(
+			{
+				fromExtension: true,
+				compactionEntry: {
+					details: {
+						asyncPrefixCompaction: {
+							jobId: "async-prefix-compaction:builtin-pi-compaction:99",
+							snapshotLeafId: "a1",
+							modelKey: "openai/test-model",
+							thinkingLevel: "off",
+							settingsKey: JSON.stringify({ enabled: true, reserveTokens: 100, keepRecentTokens: 1 }),
+							promptVersion: "pi-compact-background-v1",
+							adapterId: "builtin-pi-compaction",
+						},
+					},
+				},
+			},
+			ctx,
+		);
+
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(notifyMessages).toEqual([]);
 	});
 
 	test("applies a ready async compaction at safe agent end", async () => {
@@ -187,7 +227,7 @@ describe("extension hooks", () => {
 
 	test("auto-resumes after a force-stopped async compaction is applied", async () => {
 		const deps = asyncJobDeps({ triggerCompaction: (jobCtx) => jobCtx.compact() });
-		const { handlers, sentUserMessages, ctx } = extensionHarness({
+		const { handlers, notifyMessages, sentUserMessages, ctx } = extensionHarness({
 			applyReadyCompaction: (jobCtx, state) => applyReadyCompaction(jobCtx, state, deps),
 			startAsyncJob: (jobCtx, state, options) =>
 				startAsyncJobWithDeps(jobCtx, state, deps, { ...(options ?? { force: false }), adapter: undefined }),
@@ -233,7 +273,55 @@ describe("extension hooks", () => {
 		);
 
 		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(notifyMessages).toEqual(["Applied ready built-in Pi compaction"]);
 		expect(sentUserMessages).toEqual(["continue"]);
+	});
+
+	test("does not auto-resume when user input arrives before deferred resume", async () => {
+		const deps = asyncJobDeps({ triggerCompaction: (jobCtx) => jobCtx.compact() });
+		const { handlers, sentUserMessages, ctx } = extensionHarness({
+			applyReadyCompaction: (jobCtx, state) => applyReadyCompaction(jobCtx, state, deps),
+			startAsyncJob: (jobCtx, state, options) =>
+				startAsyncJobWithDeps(jobCtx, state, deps, { ...(options ?? { force: false }), adapter: undefined }),
+		});
+		const turnEndHandler = handlers.get("turn_end");
+		const beforeCompactHandler = handlers.get("session_before_compact");
+		const compactHandler = handlers.get("session_compact");
+		if (!turnEndHandler || !beforeCompactHandler || !compactHandler) throw new Error("expected lifecycle handlers");
+
+		const entries = compactableEntries();
+		turnEndHandler({}, {
+			...asyncJobContext(entries),
+			isIdle: () => false,
+			hasPendingMessages: () => false,
+			signal: new AbortController().signal,
+			abort: () => undefined,
+			compact: () => undefined,
+		} as ExtensionContext);
+		await Promise.resolve();
+
+		const handoff = await beforeCompactHandler(validationEvent(), {
+			...asyncJobContext(entries),
+			hasUI: true,
+			ui: ctx.ui,
+		} as ExtensionContext);
+		if (!handoff || typeof handoff !== "object" || !("compaction" in handoff)) {
+			throw new Error("expected async compaction handoff");
+		}
+		const compaction = (handoff as { readonly compaction: CompactionResult }).compaction;
+		let pendingMessages = false;
+
+		compactHandler(
+			{
+				fromExtension: true,
+				compactionEntry: { details: compaction.details },
+			},
+			{ ...ctx, hasPendingMessages: () => pendingMessages } as ExtensionContext,
+		);
+		pendingMessages = true;
+
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(sentUserMessages).toEqual([]);
 	});
 
 	test("defers ready async compaction at agent end when queued messages are pending", async () => {

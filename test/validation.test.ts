@@ -42,12 +42,7 @@ describe("validateReadyJob", () => {
 	});
 
 	test("rejects ready jobs when the result first kept entry differs from the snapshot", () => {
-		const entries = [
-			userEntry("u1", null, "old prefix"),
-			assistantEntry("a1", "u1", "old assistant"),
-			userEntry("u2", "a1", "raw tail starts here"),
-			assistantEntry("a2", "u2", "snapshot leaf"),
-		];
+		const entries = validEntries();
 		const job = readyJob({
 			result: {
 				...readyJob().result,
@@ -57,4 +52,60 @@ describe("validateReadyJob", () => {
 
 		expect(validateReadyJob(job, validationEvent(), validationContext(entries))).toBe("first_kept_mismatch");
 	});
+
+	test.each([
+		["session changes", readyJob({ sessionId: "other-session" }), validationEvent(), validationContext(validEntries()), "session_changed"],
+		["model changes", readyJob({ modelKey: "other/model" }), validationEvent(), validationContext(validEntries()), "model_changed"],
+		[
+			"compaction settings change",
+			readyJob(),
+			{ ...validationEvent(), preparation: { ...validationEvent().preparation, settings: { ...validationEvent().preparation.settings, reserveTokens: 101 } } },
+			validationContext(validEntries()),
+			"settings_changed",
+		],
+		["thinking level changes", readyJob({ thinkingLevel: "low" }), validationEvent(), validationContext(validEntries()), "thinking_changed"],
+		[
+			"the first kept entry disappears",
+			readyJob(),
+			validationEvent(),
+			validationContext([userEntry("u1", null, "old prefix"), assistantEntry("a1", "u1", "old assistant"), assistantEntry("a2", "a1", "snapshot leaf")]),
+			"first_kept_missing",
+		],
+		[
+			"the first kept entry becomes a tool result",
+			readyJob(),
+			validationEvent(),
+			validationContext([userEntry("u1", null, "old prefix"), assistantEntry("a1", "u1", "old assistant"), toolResultEntry("u2", "a1"), assistantEntry("a2", "u2", "snapshot leaf")]),
+			"first_kept_tool_result",
+		],
+		[
+			"the first kept entry is after the snapshot",
+			readyJob({ snapshotLeafId: "a1" }),
+			validationEvent(),
+			validationContext(validEntries()),
+			"first_kept_after_snapshot",
+		],
+	] as const)("rejects ready jobs when %s", (_description, job, event, ctx, reason) => {
+		expect(validateReadyJob(job, event, ctx)).toBe(reason);
+	});
 });
+
+function validEntries() {
+	return [
+		userEntry("u1", null, "old prefix"),
+		assistantEntry("a1", "u1", "old assistant"),
+		userEntry("u2", "a1", "raw tail starts here"),
+		assistantEntry("a2", "u2", "snapshot leaf"),
+	];
+}
+
+function toolResultEntry(id: string, parentId: string) {
+	const entry = userEntry(id, parentId, "tool result");
+	return {
+		...entry,
+		message: {
+			...entry.message,
+			role: "toolResult",
+		},
+	} as unknown as ReturnType<typeof userEntry>;
+}

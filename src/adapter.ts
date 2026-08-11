@@ -1,7 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CompactionResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { SUMMARY_PROMPT_VERSION } from "./constants";
+import { BUILTIN_ADAPTER_ID, BUILTIN_ADAPTER_LABEL, SUMMARY_PROMPT_VERSION } from "./constants";
 import { prepareAsyncCompaction } from "./preparation";
 import type { LocalCompactionPreparation, ResolvedCompactionSettings, Snapshot } from "./types";
 import { getThinkingLevel, modelKey, settingsKey } from "./utils";
@@ -58,8 +58,8 @@ export function createBuiltinPiCompactionAdapter(
 	buildAsyncCompactionResult: BuildAsyncCompactionResult,
 ): AsyncCompactionAdapter<BuiltinPiPreparedCompaction, CompactionResult> {
 	return {
-		id: "builtin-pi-compaction",
-		label: "built-in Pi compaction",
+		id: BUILTIN_ADAPTER_ID,
+		label: BUILTIN_ADAPTER_LABEL,
 		prepare: ({ ctx, settings }) => {
 			const branch = ctx.sessionManager.getBranch();
 			const preparation = prepareAsyncCompaction(branch, settings);

@@ -1,5 +1,15 @@
 # changelog
 
+## 0.1.7 — unreleased
+
+- fixed adapter isolation: status keys and job IDs are adapter-scoped; persisted markers now correlate adapter ID, job ID, and prompt version before notification or auto-resume.
+- added abort-and-compact handling for eligible over-threshold active turns; made ready-result application idempotent and preserved queued user work by re-checking for pending messages before deferred auto-resume.
+- added opt-in structured lifecycle diagnostics for starts, ready results, handoffs, invalidations, failures, durations, and potential/confirmed wasted work.
+- added direct configuration and validation-invalidation regressions.
+- updated development compatibility to Pi `0.84.1`, verified the supported `0.80.3`–`0.84.1` range, and normalize nullable provider headers at Pi's typed boundary.
+- added dependency overrides that remove the package's currently resolvable audit advisories.
+- added tagged/unreleased release-consistency and GitHub CI gates for locked verification, real parity, audit, package contents, and the supported Pi matrix.
+
 ## 0.1.6 — 2026-07-19
 
 - added experimental `pi-async-compaction/core` adapter api for package authors

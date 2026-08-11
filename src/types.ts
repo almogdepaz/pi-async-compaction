@@ -2,16 +2,26 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { CompactionResult, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { InvalidationReason, JobStatus } from "./constants";
+import type { AsyncCompactionLifecycleObserver } from "./diagnostics";
+
+export interface AsyncCompactionMarker {
+	readonly adapterId: string;
+	readonly jobId: string;
+	readonly snapshotLeafId: string;
+	readonly modelKey: string;
+	readonly thinkingLevel: ThinkingLevel;
+	readonly settingsKey: string;
+	readonly promptVersion: string;
+}
+
+export interface JobCorrelation {
+	readonly adapterId: string;
+	readonly jobId: string;
+	readonly promptVersion: string;
+}
 
 export interface AsyncCompactionDetails {
-	readonly asyncPrefixCompaction: {
-		readonly jobId: string;
-		readonly snapshotLeafId: string;
-		readonly modelKey: string;
-		readonly thinkingLevel: ThinkingLevel;
-		readonly settingsKey: string;
-		readonly promptVersion: string;
-	};
+	readonly asyncPrefixCompaction: AsyncCompactionMarker;
 	readonly readFiles?: readonly string[];
 	readonly modifiedFiles?: readonly string[];
 }
@@ -28,6 +38,7 @@ export interface Snapshot {
 }
 
 export interface ReadyJob extends Snapshot {
+	readonly adapterId: string;
 	readonly result: CompactionResult<AsyncCompactionDetails>;
 }
 
@@ -51,6 +62,8 @@ export interface LocalCompactionPreparation {
 }
 
 export interface RuntimeState {
+	readonly adapterId: string;
+	readonly adapterLabel: string;
 	status: JobStatus;
 	jobId: string | undefined;
 	ready: ReadyJob | undefined;
@@ -58,6 +71,9 @@ export interface RuntimeState {
 	error: string | undefined;
 	abortController: AbortController | undefined;
 	jobCounter: number;
-	lastHandedOffJobId: string | undefined;
-	autoResumeAfterCompactionJobId: string | undefined;
+	applyInFlight: JobCorrelation | undefined;
+	lastHandedOff: JobCorrelation | undefined;
+	autoResumeAfterCompaction: JobCorrelation | undefined;
+	lifecycleObserver: AsyncCompactionLifecycleObserver | undefined;
+	lifecycleStartedAtMs: number | undefined;
 }
