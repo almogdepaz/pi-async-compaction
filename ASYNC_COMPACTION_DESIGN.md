@@ -21,7 +21,7 @@ Quality goal: async compaction should behave like Pi compaction. The extension t
 
 ### `turn_end`
 
-After each turn, the extension checks `ctx.getContextUsage()` and Pi compaction settings from `SettingsManager.create(ctx.cwd).getCompactionSettings()`.
+After each turn, the extension checks `ctx.getContextUsage()` and Pi compaction settings from a trust-aware `SettingsManager` configured with `ctx.isProjectTrusted()`.
 
 A background job starts when:
 
@@ -32,17 +32,11 @@ contextTokens <= contextWindow - piSettings.compaction.reserveTokens
 
 `PI_ASYNC_PREFIX_COMPACTION_START_RATIO` is only the early-start threshold. Reserve and keep-recent behavior come from Pi compaction settings.
 
-### `agent_end`
+### `agent_settled`
 
-When a background job is already ready, this hook retries applying it after the full user prompt completes or is cancelled with Escape. `turn_end` is not sufficient because a single prompt can contain multiple LLM/tool turns.
+When a background job is already ready, this hook attempts to apply it after the full user prompt completes or is cancelled with Escape. `turn_end` is not sufficient because a single prompt can contain multiple LLM/tool turns.
 
-Pi's `agent_end` event fires before the agent reports idle to extension handlers, so the extension checks on the next macrotask and briefly retries while the same ready job is still settling. Retries are bounded, stop when queued work appears or the job changes, and call `ctx.compact()` only when:
-
-```text
-ctx.isIdle() && !ctx.hasPendingMessages()
-```
-
-If queued steering/follow-up messages remain, the ready summary stays in memory and the adapter-scoped status line remains `<adapter label>: ready`.
+Pi emits `agent_settled` after the agent and queued work have settled, so the extension uses that lifecycle boundary directly instead of polling `ctx.isIdle()`. If queued steering/follow-up messages remain, the ready summary stays in memory and the adapter-scoped status line remains `<adapter label>: ready`.
 
 ### `session_before_compact`
 
@@ -165,7 +159,7 @@ If any check fails, the job becomes stale and Pi falls back to synchronous compa
 
 A pending background job sets Pi's adapter-scoped extension status to `<adapter label>: preparing`. When the job becomes ready, the extension attempts to apply it if Pi is idle and has no queued messages. If Pi is actively responding, abortable, has no queued messages, and current usage is over the async threshold, it aborts and triggers Pi compaction. Otherwise the job remains ready and Pi's extension status becomes `<adapter label>: ready`.
 
-A ready job triggers Pi compaction via `ctx.compact()` from a safe boundary (`agent_end` or immediate background completion while already idle) or from an over-threshold abortable active turn. The active-turn path calls `ctx.abort()` first and records the job id for auto-resume. After `session_compact` confirms Pi persisted that same extension-provided compaction, the extension defers one macrotask and sends `continue` through Pi's public extension API. The `agent_end` path uses a bounded, job-correlated settle retry because Pi may remain non-idle beyond one macrotask. If compaction does not run immediately or the ready job remains around, it is kept while it still validates and its preview fits. If later turns make the ready summary too large to apply, or session/model/thinking/settings drift makes it unusable, a new `turn_end` crossing supersedes it and starts a replacement background job.
+A ready job triggers Pi compaction via `ctx.compact()` from a safe boundary (`agent_settled` or immediate background completion while already idle) or from an over-threshold abortable active turn. The active-turn path calls `ctx.abort()` first and records the job id for auto-resume. After `session_compact` confirms Pi persisted that same extension-provided compaction, the extension defers one macrotask and sends `continue` through Pi's public extension API. If compaction does not run immediately or the ready job remains around, it is kept while it still validates and its preview fits. If later turns make the ready summary too large to apply, or session/model/thinking/settings drift makes it unusable, a new `turn_end` crossing supersedes it and starts a replacement background job.
 
 Pending jobs are not replaced; `/async-compact-now` is a no-op while a job is pending. If Pi compacts while a job is pending, the job is staled with `sync_fallback` and Pi compacts synchronously. Automatic and manual jobs use `PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS`, which defaults to five minutes.
 

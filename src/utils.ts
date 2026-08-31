@@ -1,4 +1,4 @@
-import type { Api, Model, Usage } from "@earendil-works/pi-ai";
+import type { Api, Model, RetryPolicy, Usage } from "@earendil-works/pi-ai";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext, calculateContextTokens, estimateTokens, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -90,7 +90,11 @@ export function getAsyncCompactionMarker(value: unknown): AsyncCompactionMarker 
 }
 
 export function getCompactionSettings(ctx: ExtensionContext): ResolvedCompactionSettings {
-	return SettingsManager.create(ctx.cwd).getCompactionSettings();
+	return SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() }).getCompactionSettings();
+}
+
+export function getRetrySettings(ctx: ExtensionContext): RetryPolicy {
+	return SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() }).getRetrySettings();
 }
 
 export function getThinkingLevel(pathEntries: readonly SessionEntry[]): ThinkingLevel {
@@ -99,7 +103,7 @@ export function getThinkingLevel(pathEntries: readonly SessionEntry[]): Thinking
 }
 
 function isThinkingLevel(value: unknown): value is ThinkingLevel {
-	return typeof value === "string" && ["off", "minimal", "low", "medium", "high", "xhigh"].includes(value);
+	return typeof value === "string" && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value);
 }
 
 export function isToolResultEntry(entry: SessionEntry): boolean {

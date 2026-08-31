@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { CompactionResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerAsyncCompaction } from "../src/core";
 import type { AsyncCompactionLifecycleEvent } from "../src/core";
+import { createBuiltinPiCompactionAdapter } from "../src/adapter";
 import type { AsyncCompactionAdapter } from "../src/adapter";
 import { startAsyncJobWithDeps } from "../src/job";
-import type { Snapshot } from "../src/types";
+import type { RuntimeState, Snapshot } from "../src/types";
 import { asyncJobContext, asyncJobDeps, compactableEntries, settings, validationEvent } from "./test-fixtures";
 
 describe("registerAsyncCompaction", () => {
@@ -74,6 +75,69 @@ describe("registerAsyncCompaction", () => {
 			expect.objectContaining({ event: "started", adapterId: "package-adapter", jobId: "async-prefix-compaction:package-adapter:1" }),
 			expect.objectContaining({ event: "ready", adapterId: "package-adapter", jobId: "async-prefix-compaction:package-adapter:1", durationMs: expect.any(Number) }),
 			expect.objectContaining({ event: "handed_off", adapterId: "package-adapter", jobId: "async-prefix-compaction:package-adapter:1", durationMs: expect.any(Number) }),
+		]);
+	});
+
+	test("records one correlated extension apply failure and clears terminal handoff state", () => {
+		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+		const lifecycleEvents: AsyncCompactionLifecycleEvent[] = [];
+		const pi = {
+			on: (eventName: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(eventName, handler),
+			registerCommand: () => undefined,
+		} as unknown as ExtensionAPI;
+		const deps = asyncJobDeps();
+		let runtimeState: RuntimeState | undefined;
+		registerAsyncCompaction(
+			pi,
+			createBuiltinPiCompactionAdapter(deps.buildAsyncCompactionResult),
+			{ commandName: false, onLifecycleEvent: (event) => lifecycleEvents.push(event) },
+			{
+				startAsyncJob: (_ctx, state) => {
+					runtimeState = state;
+					return "disabled";
+				},
+			},
+		);
+		const turnEnd = handlers.get("turn_end");
+		const compactFailed = handlers.get("session_compact_failed");
+		if (!turnEnd || !compactFailed) throw new Error("expected compaction lifecycle handlers");
+
+		const ctx = asyncJobContext(compactableEntries());
+		turnEnd({}, ctx);
+		if (!runtimeState) throw new Error("expected runtime state");
+		const correlation = {
+			adapterId: runtimeState.adapterId,
+			jobId: "async-prefix-compaction:builtin-pi-compaction:1",
+			promptVersion: "pi-compact-background-v1",
+		};
+		runtimeState.status = "idle";
+		runtimeState.lastHandedOff = correlation;
+		runtimeState.autoResumeAfterCompaction = correlation;
+		const failureEvent = {
+			type: "session_compact_failed",
+			reason: "manual",
+			aborted: true,
+			willRetry: false,
+			fromExtension: true,
+		} as const;
+
+		compactFailed({ ...failureEvent, fromExtension: false }, ctx);
+		expect(lifecycleEvents).toEqual([]);
+		compactFailed(failureEvent, ctx);
+		compactFailed(failureEvent, ctx);
+
+		expect(runtimeState).toMatchObject({
+			status: "failed",
+			lastHandedOff: undefined,
+			autoResumeAfterCompaction: undefined,
+		});
+		expect(lifecycleEvents).toEqual([
+			expect.objectContaining({
+				event: "failed",
+				jobId: correlation.jobId,
+				phase: "apply",
+				error: "apply failed: compaction aborted",
+			}),
 		]);
 	});
 

@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AsyncCompactionAdapter } from "./adapter";
-import { APPLY_RETRY_DELAY_MS, APPLY_RETRY_LIMIT, AUTO_RESUME_PROMPT, InvalidationReason } from "./constants";
+import { AUTO_RESUME_PROMPT, InvalidationReason } from "./constants";
 import { emitLifecycleEvent, getLifecycleDurationMs } from "./diagnostics";
-import { applyReadyCompaction, startAsyncJob } from "./job";
+import { applyReadyCompaction, recordApplyError, startAsyncJob } from "./job";
 import type { StartAsyncJobOutcome } from "./job";
 import { createRuntimeState, getStatusKey, markStale } from "./runtime-state";
 import type { AsyncCompactionMarker, JobCorrelation, RuntimeState } from "./types";
@@ -99,28 +99,6 @@ function invalidateActiveJob(ctx: ExtensionContext, state: RuntimeState, reason:
 	clearCliStatus(ctx, state);
 }
 
-function scheduleReadyCompactionApply(
-	ctx: ExtensionContext,
-	state: RuntimeState,
-	deps: AsyncCompactionCoreDependencies,
-	expectedJobId?: string,
-	retriesRemaining = APPLY_RETRY_LIMIT,
-): void {
-	const delayMs = expectedJobId ? APPLY_RETRY_DELAY_MS : 0;
-	setTimeout(() => {
-		const readyJobId = state.ready?.jobId;
-		if (state.status !== "ready" || !readyJobId || (expectedJobId && readyJobId !== expectedJobId)) return;
-		if (ctx.hasPendingMessages()) return;
-		if (ctx.isIdle()) {
-			deps.applyReadyCompaction(ctx, state);
-			return;
-		}
-		if (retriesRemaining > 0) {
-			scheduleReadyCompactionApply(ctx, state, deps, readyJobId, retriesRemaining - 1);
-		}
-	}, delayMs);
-}
-
 export function registerAsyncCompaction<TPrepared, TResult>(
 	pi: ExtensionAPI,
 	adapter: AsyncCompactionAdapter<TPrepared, TResult>,
@@ -136,8 +114,8 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 		deps.startAsyncJob(ctx, state, { adapter: jobAdapter, force: false });
 	});
 
-	pi.on("agent_end", (_event, ctx) => {
-		scheduleReadyCompactionApply(ctx, state, deps);
+	pi.on("agent_settled", (_event, ctx) => {
+		if (!ctx.hasPendingMessages()) deps.applyReadyCompaction(ctx, state);
 	});
 
 	pi.on("model_select", (_event, ctx) => {
@@ -208,6 +186,12 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 				if (!ctx.hasPendingMessages()) pi.sendUserMessage(AUTO_RESUME_PROMPT);
 			}, 0);
 		}
+	});
+
+	pi.on("session_compact_failed", (event) => {
+		const correlation = state.lastHandedOff;
+		if (!event.fromExtension || !correlation) return;
+		recordApplyError(state, correlation, new Error(event.errorMessage ?? "compaction aborted"));
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {

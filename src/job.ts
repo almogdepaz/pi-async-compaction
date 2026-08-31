@@ -1,4 +1,4 @@
-import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai";
+import type { Api, Model, ProviderHeaders, RetryPolicy } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CompactionResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { compact } from "@earendil-works/pi-coding-agent";
@@ -9,7 +9,7 @@ import { emitLifecycleEvent, getLifecycleDurationMs } from "./diagnostics";
 import { getAbortInvalidationReason, getStatusKey, markStale, nextJobId } from "./runtime-state";
 import type { AsyncCompactionDetails, JobCorrelation, LocalCompactionPreparation, ReadyJob, ResolvedCompactionSettings, RuntimeState, Snapshot } from "./types";
 import { getReadyJobContextInvalidationReason } from "./validation";
-import { getCompactionSettings, getStartRatio, getStartWindow, getTimeoutMs, isEnabled } from "./utils";
+import { getCompactionSettings, getRetrySettings, getStartRatio, getStartWindow, getTimeoutMs, isEnabled } from "./utils";
 
 function getReadyJobReplacementReason(
 	ready: ReadyJob,
@@ -49,16 +49,34 @@ export async function buildAsyncCompactionResult(
 	thinkingLevel: ThinkingLevel,
 	signal: AbortSignal,
 	compactFn: typeof compact = compact,
+	getRetrySettingsFn: (ctx: ExtensionContext) => RetryPolicy = getRetrySettings,
 ): Promise<CompactionResult> {
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok) {
 		throw new Error(auth.error);
 	}
-	if (!auth.apiKey) {
-		throw new Error(`No API key for ${model.provider}`);
+	const requestHeaders = normalizeProviderHeaders(auth.headers);
+	if (!auth.apiKey && !requestHeaders) {
+		throw new Error(`No API key or headers for ${model.provider}`);
 	}
+	const requestModel = auth.baseUrl || auth.headers
+		? { ...model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}), headers: requestHeaders }
+		: model;
 
-	return compactFn(preparation, model, auth.apiKey, normalizeProviderHeaders(auth.headers), undefined, signal, thinkingLevel, undefined, auth.env);
+	// Pi's compact() type still excludes nullable ProviderHeaders, but its runtime forwards them
+	// to pi-ai unchanged. Keep the cast at this compatibility boundary until Pi widens the type.
+	return compactFn(
+		preparation,
+		requestModel,
+		auth.apiKey,
+		auth.headers as Parameters<typeof compact>[3],
+		undefined,
+		signal,
+		thinkingLevel,
+		undefined,
+		auth.env,
+		getRetrySettingsFn(ctx),
+	);
 }
 
 type TimeoutHandle = ReturnType<typeof setTimeout>;
@@ -180,7 +198,7 @@ function matchesJobCorrelation(
 	return left?.adapterId === right.adapterId && left.jobId === right.jobId && left.promptVersion === right.promptVersion;
 }
 
-function recordApplyError(state: RuntimeState, correlation: JobCorrelation, error: Error): void {
+export function recordApplyError(state: RuntimeState, correlation: JobCorrelation, error: Error): void {
 	const isApplyingJob = state.status === "ready" && matchesJobCorrelation(state.applyInFlight, correlation);
 	const isHandedOffJob = state.status === "idle" && matchesJobCorrelation(state.lastHandedOff, correlation);
 	if (!isApplyingJob && !isHandedOffJob) return;
