@@ -1,5 +1,11 @@
 # changelog
 
+## 0.1.8 — 2026-08-31
+
+- aligned ready-summary application with Pi `0.84`'s `agent_settled` lifecycle and added correlated handling for extension compaction failures.
+- forwarded trusted-project settings, retry policy, resolved provider headers/base URLs, header-only authentication, and the `max` thinking level through async compaction.
+- raised the supported Pi range to `0.84.3`–`0.84.4` and added real-session lifecycle, retry, authentication, and compatibility coverage.
+
 ## 0.1.7 — 2026-08-11
 
 - fixed adapter isolation: status keys and job IDs are adapter-scoped; persisted markers now correlate adapter ID, job ID, and prompt version before notification or auto-resume.

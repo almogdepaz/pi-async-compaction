@@ -42,7 +42,7 @@ pi install npm:pi-async-compaction
 From git:
 
 ```bash
-pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.7
+pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.8
 ```
 
 Local development:

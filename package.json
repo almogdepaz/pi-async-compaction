@@ -1,6 +1,6 @@
 {
   "name": "pi-async-compaction",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Async context compaction for the Pi coding agent: precompute background summaries for long sessions.",
   "license": "MIT",
   "type": "module",
