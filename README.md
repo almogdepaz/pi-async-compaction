@@ -90,7 +90,7 @@ Async compaction precomputes summaries early, then applies them only at a safe b
 3. when the summary is ready, the extension applies it immediately if Pi is idle and has no queued messages
 4. if Pi is actively responding, abortable, has no queued messages, and is still over the async threshold, it aborts and triggers Pi compaction
 5. after Pi persists that extension-provided compaction, the extension sends `continue` to resume work
-6. otherwise the ready summary is kept for later and Pi's status bar shows `<adapter label>: ready`; after `agent_end`, the extension briefly retries while Pi settles
+6. otherwise the ready summary is kept for later and Pi's status bar shows `<adapter label>: ready`; at Pi's next `agent_settled` event, the extension applies it if no messages are queued
 7. Pi fires `session_before_compact`; if the ready async summary validates, the extension returns it
 8. otherwise Pi falls back to normal synchronous compaction
 
@@ -201,7 +201,7 @@ bun run check
 bun pm pack --dry-run
 ```
 
-This package is tested against Pi `0.80.3` and `0.84.1`. Its declared peer range is `>=0.80.3 <0.85.0`; Pi provides the core packages at runtime.
+This package is tested against Pi `0.84.3` and `0.84.4`. Its declared peer range is `>=0.84.3 <0.85.0`; Pi provides the core packages at runtime.
 
 ## changelog
 
