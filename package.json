@@ -45,6 +45,8 @@
   },
   "files": [
     "src/adapter.ts",
+    "src/backend.ts",
+    "src/comparison.ts",
     "src/core.ts",
     "src/constants.ts",
     "src/chatgpt-compaction.ts",

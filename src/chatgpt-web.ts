@@ -45,6 +45,49 @@ function abortError(): Error {
 	return error;
 }
 
+const profileTails = new Map<string, Promise<void>>();
+
+function waitForProfileTurn(turn: Promise<void>, signal: AbortSignal): Promise<void> {
+	if (signal.aborted) return Promise.reject(abortError());
+	return new Promise((resolve, reject) => {
+		const onAbort = () => reject(abortError());
+		signal.addEventListener("abort", onAbort, { once: true });
+		void turn.then(
+			() => {
+				signal.removeEventListener("abort", onAbort);
+				resolve();
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
+/** Serializes persistent-Chrome ownership per profile while allowing aborted waiters to leave the queue. */
+export function serializeChatGptTransportByProfile(profileDir: string, transport: ChatGptTransport): ChatGptTransport {
+	return {
+		complete: async (request, signal) => {
+			const previous = profileTails.get(profileDir) ?? Promise.resolve();
+			let release: (() => void) | undefined;
+			const completed = new Promise<void>((resolve) => { release = resolve; });
+			const turn = previous.then(() => completed);
+			profileTails.set(profileDir, turn);
+			void turn.then(() => {
+				if (profileTails.get(profileDir) === turn) profileTails.delete(profileDir);
+			});
+			try {
+				await waitForProfileTurn(previous, signal);
+				if (signal.aborted) throw abortError();
+				return await transport.complete(request, signal);
+			} finally {
+				release?.();
+			}
+		},
+	};
+}
+
 export function getChatGptResponseFailure(text: string): string | undefined {
 	const normalized = text.toLowerCase();
 	if (/continue generating|continue generation/.test(normalized)) {
@@ -236,5 +279,6 @@ class PlaywrightChatGptTransport implements ChatGptTransport {
 
 /** Creates a lazy browser transport. The persistent profile retains only the user's web login. */
 export function createChatGptWebTransport(): ChatGptTransport {
-	return new PlaywrightChatGptTransport(getConfig());
+	const config = getConfig();
+	return serializeChatGptTransportByProfile(config.profileDir, new PlaywrightChatGptTransport(config));
 }

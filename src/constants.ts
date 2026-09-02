@@ -1,7 +1,10 @@
 export const EXTENSION_NAME = "async-prefix-compaction";
 export const BUILTIN_ADAPTER_ID = "builtin-pi-compaction";
 export const BUILTIN_ADAPTER_LABEL = "ChatGPT web compaction";
+export const SELECTABLE_ADAPTER_ID = "selected-compaction-backend";
+export const SELECTABLE_ADAPTER_LABEL = "Async compaction";
 export const SUMMARY_PROMPT_VERSION = "chatgpt-web-compact-v1";
+export const PROVIDER_SUMMARY_PROMPT_VERSION = "pi-compact-background-v1";
 export const DEFAULT_START_RATIO = 0.8;
 export const DEFAULT_TIMEOUT_MS = 300_000;
 export const AUTO_RESUME_PROMPT = "continue";

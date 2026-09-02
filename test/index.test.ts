@@ -11,6 +11,7 @@ import {
 	manualCommandContext,
 	ownAsyncMarker,
 	recordFromUnknown,
+	settings,
 	textBlocksFromMessage,
 	timestamp,
 	userEntry,
@@ -68,6 +69,143 @@ describe("extension hooks", () => {
 		await command.handler("", commandCtx);
 
 		expect(notifyMessages).toEqual(["async compaction not started: job already pending"]);
+	});
+
+	test("switches backend by invalidating pending work and clears its status", async () => {
+		let state: import("../src/types").RuntimeState | undefined;
+		const { commands, statusValues, ctx } = extensionHarness({
+			startAsyncJob: (_jobCtx, runtimeState) => {
+				state = runtimeState;
+				runtimeState.status = "pending";
+				runtimeState.jobId = "async-prefix-compaction:builtin-pi-compaction:1";
+				return "started";
+			},
+		});
+		const start = commands.get("async-compact-now");
+		const switchBackend = commands.get("async-compaction-backend");
+		if (!start || !switchBackend) throw new Error("expected backend commands");
+
+		await start.handler("", { ...manualCommandContext(), ui: ctx.ui } as ExtensionContext);
+		await switchBackend.handler("provider", ctx);
+
+		expect(state?.status).toBe("stale");
+		expect(statusValues).toContain(undefined);
+	});
+
+	test("normal mode blocks extension starts while preserving the selected backend", async () => {
+		let starts = 0;
+		const { commands, handlers, notifyMessages, ctx } = extensionHarness({
+			getInitialMode: () => "normal",
+			getInitialBackend: () => "provider",
+			startAsyncJob: () => { starts++; return "started"; },
+		});
+		const start = commands.get("async-compact-now");
+		const mode = commands.get("compaction-mode");
+		const backend = commands.get("async-compaction-backend");
+		const turnEnd = handlers.get("turn_end");
+		if (!start || !mode || !backend || !turnEnd) throw new Error("expected compaction controls");
+
+		await start.handler("", { ...manualCommandContext(), ui: ctx.ui } as ExtensionContext);
+		turnEnd({}, ctx);
+		await backend.handler("provider", ctx);
+		await mode.handler("async", ctx);
+
+		expect(starts).toBe(0);
+		expect(notifyMessages).toEqual([
+			"async compaction not started: normal mode",
+			"async compaction backend already provider",
+			"compaction mode set to async",
+		]);
+	});
+
+	test("switching compaction mode invalidates pending work and clears status", async () => {
+		let state: import("../src/types").RuntimeState | undefined;
+		const { commands, handlers, statusValues, ctx } = extensionHarness({
+			startAsyncJob: (_jobCtx, runtimeState) => {
+				state = runtimeState;
+				runtimeState.status = "pending";
+				runtimeState.jobId = "async-prefix-compaction:selected-compaction-backend:1";
+				return "started";
+			},
+		});
+		const start = commands.get("async-compact-now");
+		const mode = commands.get("compaction-mode");
+		const beforeCompact = handlers.get("session_before_compact");
+		if (!start || !mode || !beforeCompact) throw new Error("expected mode commands");
+		await start.handler("", { ...manualCommandContext(), ui: ctx.ui } as ExtensionContext);
+		await mode.handler("normal", ctx);
+		expect(state?.status).toBe("stale");
+		expect(statusValues).toContain(undefined);
+		expect(await beforeCompact(validationEvent(), ctx)).toBeUndefined();
+	});
+
+	test("compares backends without starting or applying an async job", async () => {
+		let startCalls = 0;
+		let reportPath: string | undefined;
+		const { commands, notifyMessages, ctx } = extensionHarness({
+			startAsyncJob: () => {
+				startCalls++;
+				return "started";
+			},
+			runComparison: async ({ preparation }) => {
+				expect(preparation.firstKeptEntryId).toBe("u2");
+				return {
+					provider: { status: "completed", markdown: "provider summary", durationMs: 1, outputLength: 16 },
+					web: { status: "completed", markdown: "web summary", durationMs: 2, outputLength: 11 },
+				};
+			},
+			writeComparisonReport: async () => ({
+				directory: "/private/reports",
+				htmlPath: "/private/reports/result.html",
+				providerMarkdownPath: "/private/reports/provider.md",
+				webMarkdownPath: "/private/reports/web.md",
+				metadataPath: "/private/reports/metadata.json",
+			}),
+			openComparisonReport: async (path) => {
+				reportPath = path;
+			},
+			getCompactionSettings: () => settings,
+		});
+		const compare = commands.get("async-compact-compare");
+		if (!compare) throw new Error("expected comparison command");
+
+		await compare.handler("", { ...manualCommandContext(), ui: ctx.ui } as ExtensionContext);
+
+		expect(startCalls).toBe(0);
+		expect(reportPath).toBe("/private/reports/result.html");
+		expect(notifyMessages).toEqual(["async compaction comparison written to /private/reports/result.html"]);
+	});
+
+	test("rejects a duplicate comparison and treats opener failure as a nonfatal warning", async () => {
+		let releaseComparison: (() => void) | undefined;
+		let comparisonCalls = 0;
+		const { commands, notifyMessages, ctx } = extensionHarness({
+			runComparison: async () => {
+				comparisonCalls++;
+				await new Promise<void>((resolve) => { releaseComparison = resolve; });
+				return {
+					provider: { status: "completed", markdown: "provider", durationMs: 1, outputLength: 8 },
+					web: { status: "completed", markdown: "web", durationMs: 1, outputLength: 3 },
+				};
+			},
+			writeComparisonReport: async () => ({ directory: "/private", htmlPath: "/private/result.html", providerMarkdownPath: "/private/p.md", webMarkdownPath: "/private/w.md", metadataPath: "/private/m.json" }),
+			openComparisonReport: async () => { throw new Error("open unavailable"); },
+			getCompactionSettings: () => settings,
+		});
+		const compare = commands.get("async-compact-compare");
+		if (!compare) throw new Error("expected comparison command");
+		const first = compare.handler("", { ...manualCommandContext(), ui: ctx.ui } as ExtensionContext);
+		await Promise.resolve();
+		await compare.handler("", { ...manualCommandContext(), ui: ctx.ui } as ExtensionContext);
+		releaseComparison?.();
+		await first;
+
+		expect(comparisonCalls).toBe(1);
+		expect(notifyMessages).toEqual([
+			"async compaction comparison already running",
+			"async compaction comparison written to /private/result.html",
+			"warning: async compaction comparison report could not be opened: /private/result.html (open unavailable)",
+		]);
 	});
 
 	test("does not claim compactions from other extensions", () => {
@@ -226,7 +364,7 @@ describe("extension hooks", () => {
 		);
 
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(notifyMessages).toEqual(["Applied ready ChatGPT web compaction"]);
+		expect(notifyMessages).toEqual(["Applied ready Async compaction"]);
 		expect(sentUserMessages).toEqual(["continue"]);
 	});
 

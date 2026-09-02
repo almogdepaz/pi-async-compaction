@@ -23,11 +23,19 @@ export interface RegisterAsyncCompactionOptions {
 	readonly commandName?: string | false;
 	readonly commandDescription?: string;
 	readonly onLifecycleEvent?: import("./diagnostics").AsyncCompactionLifecycleObserver;
+	/** Lets an extension suspend its own lifecycle without intercepting Pi compaction. */
+	readonly isActive?: () => boolean;
+	readonly inactiveManualMessage?: string;
 }
 
 export interface AsyncCompactionCoreDependencies {
 	readonly applyReadyCompaction: typeof applyReadyCompaction;
 	readonly startAsyncJob: typeof startAsyncJob;
+}
+
+/** Optional controller returned by registration; existing callers may ignore it. */
+export interface AsyncCompactionRegistration {
+	invalidate(ctx: ExtensionContext, reason?: InvalidationReason): void;
 }
 
 const defaultCoreDependencies: AsyncCompactionCoreDependencies = {
@@ -104,18 +112,20 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 	adapter: AsyncCompactionAdapter<TPrepared, TResult>,
 	options: RegisterAsyncCompactionOptions = {},
 	injectedDeps: Partial<AsyncCompactionCoreDependencies> = {},
-): void {
+): AsyncCompactionRegistration {
 	const jobAdapter = eraseAdapter(adapter);
 	validateAdapterRegistration(pi, jobAdapter);
 	const deps = { ...defaultCoreDependencies, ...injectedDeps };
 	const state = createRuntimeState(adapter.id, adapter.label, options.onLifecycleEvent);
 
+	const isActive = options.isActive ?? (() => true);
+
 	pi.on("turn_end", (_event, ctx) => {
-		deps.startAsyncJob(ctx, state, { adapter: jobAdapter, force: false });
+		if (isActive()) deps.startAsyncJob(ctx, state, { adapter: jobAdapter, force: false });
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
-		if (!ctx.hasPendingMessages()) deps.applyReadyCompaction(ctx, state);
+		if (isActive() && !ctx.hasPendingMessages()) deps.applyReadyCompaction(ctx, state);
 	});
 
 	pi.on("model_select", (_event, ctx) => {
@@ -131,6 +141,7 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
+		if (!isActive()) return;
 		const ready = state.ready;
 		if (!ready || state.status !== "ready") {
 			if (state.status === "pending") {
@@ -203,10 +214,16 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 		pi.registerCommand(options.commandName, {
 			description: options.commandDescription ?? DEFAULT_COMMAND_DESCRIPTION,
 			handler: async (_args, ctx) => {
-				const message = formatManualStartOutcome(deps.startAsyncJob(ctx, state, { adapter: jobAdapter, force: true }));
+				const message = !isActive()
+					? options.inactiveManualMessage ?? "async compaction not started: inactive"
+					: formatManualStartOutcome(deps.startAsyncJob(ctx, state, { adapter: jobAdapter, force: true }));
 				if (message && ctx.hasUI) ctx.ui.notify(message, "info");
 				if (message && !ctx.hasUI) console.log(message);
 			},
 		});
 	}
+
+	return {
+		invalidate: (ctx, reason = InvalidationReason.SUPERSEDED) => invalidateActiveJob(ctx, state, reason),
+	};
 }

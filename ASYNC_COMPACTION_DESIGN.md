@@ -1,6 +1,6 @@
 # async compaction design
 
-This Pi extension precomputes Pi-compatible compaction summaries in the background, usually waits for a safe idle boundary before triggering Pi's compaction flow, and supplies the ready summary through Pi's normal compaction hook. If a ready result exists during an abortable active turn over the async threshold, it follows Pi's normal compaction behavior by aborting before compacting.
+This Pi extension precomputes Pi-compatible compaction summaries in the background when compaction mode is `async` (the default), usually waits for a safe idle boundary before triggering Pi's compaction flow, and supplies the ready summary through Pi's normal compaction hook. `normal` mode starts and hands off no extension work, leaving native Pi compaction untouched. If a ready result exists during an abortable active turn over the async threshold, it follows Pi's normal compaction behavior by aborting before compacting.
 
 Code entrypoint: [`src/index.ts`](./src/index.ts)
 Experimental adapter entrypoint for other packages: [`src/core.ts`](./src/core.ts)
@@ -13,7 +13,7 @@ Pi compaction normally prepares a prefix of the active branch, asks the active m
 compaction summary + raw tail from firstKeptEntryId
 ```
 
-The model call is synchronous and blocks the agent. This extension moves summary generation earlier by running its ChatGPT-backed compaction path in the background after a turn. When the background result becomes ready, the extension applies it through Pi's ordinary compaction pipeline when `ctx.isIdle()` and `!ctx.hasPendingMessages()`. If Pi is actively responding with an abort signal, has no queued messages, and current usage is still above `PI_ASYNC_PREFIX_COMPACTION_START_RATIO`, the extension aborts first and triggers Pi compaction. After Pi persists that extension-provided compaction, the extension sends `continue` once to resume work.
+The model call is synchronous and blocks the agent. This extension moves summary generation earlier by running the selected backend (`web` by default, or Pi `provider`) in the background after a turn. When the background result becomes ready, the extension applies it through Pi's ordinary compaction pipeline when `ctx.isIdle()` and `!ctx.hasPendingMessages()`. If Pi is actively responding with an abort signal, has no queued messages, and current usage is still above `PI_ASYNC_PREFIX_COMPACTION_START_RATIO`, the extension aborts first and triggers Pi compaction. After Pi persists that extension-provided compaction, the extension sends `continue` once to resume work.
 
 Quality goal: async compaction should preserve Pi's preparation, validation, handoff, and persistence lifecycle. Its default backend builds Pi-format structured checkpoint prompts, serializes messages through Pi's exported `convertToLlm()` and `serializeConversation()`, then submits them to an authenticated ChatGPT web session. File-operation tags and split-turn composition remain local Pi-compatible logic; Pi model authentication is never used by the default backend.
 
@@ -71,7 +71,7 @@ Pending background work is shown through Pi's CLI status line.
 
 Pi reports context usage as unknown after compaction until a later assistant response provides fresh usage.
 
-No pending/ready metadata is persisted. Only an applied compaction is persisted by Pi as a normal `CompactionEntry`.
+No pending/ready metadata is persisted. Only an applied compaction is persisted by Pi as a normal `CompactionEntry`. `/compaction-mode normal|async` and `/async-compaction-backend provider|web` stale pending/ready work before changing future behavior; mode and backend remain independent. Backend selection has one stable generic adapter identity and a backend-specific snapshotted prompt version for marker correlation; provider retains Pi's established `pi-compact-background-v1` marker version. `/async-compact-compare` is outside this state machine: it prepares once, runs provider and web concurrently, is single-flight, observes the available context abort signal and the configured async timeout, and writes operator-only artifacts without creating a ready result or invoking Pi apply/persistence. A timeout preserves a completed side while aborting unfinished work.
 
 ## experimental adapter api
 
@@ -113,7 +113,7 @@ Pi does not currently export `prepareCompaction()`, so the extension mirrors Pi'
 - `buildSessionContext()` plus usage-aware local token accounting for token counts
 - local file-operation extraction matching Pi's `read`/`write`/`edit` handling
 
-The actual summary is generated through a typed ChatGPT web transport. Prompt construction is separate from browser automation and preserves Pi's structured checkpoint format, previous-summary update semantics, split-turn summaries, and file-operation tags. The active Pi model and thinking level stay in the snapshot solely for generic validation; the default backend does not resolve provider keys, headers, base URLs, environments, retry settings, or any other Pi model-auth data.
+The actual summary is generated through the selected typed backend: ChatGPT web by default, or Pi provider compaction with Pi's resolved authentication semantics. Prompt construction is separate from browser automation and preserves Pi's structured checkpoint format, previous-summary update semantics, split-turn summaries, and file-operation tags. The active Pi model and thinking level stay in the snapshot solely for generic validation; the default backend does not resolve provider keys, headers, base URLs, environments, retry settings, or any other Pi model-auth data.
 
 ## prefix/tail partition
 
@@ -180,6 +180,10 @@ Environment variables:
 # optional; built-in default is 0.8, use 0.5 to start precomputing around half context
 PI_ASYNC_PREFIX_COMPACTION_START_RATIO=0.5
 PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS=300000
+# async is the default; normal leaves native Pi compaction untouched
+PI_COMPACTION_MODE=async
+# web is the default; provider uses Pi model authentication
+PI_ASYNC_PREFIX_COMPACTION_BACKEND=web
 
 # headed system Chrome is the default; log in once in this dedicated profile
 PI_ASYNC_PREFIX_COMPACTION_CHATGPT_PROFILE_DIR="$HOME/.pi/chatgpt-web-compaction"
@@ -203,16 +207,16 @@ Pi compaction settings remain the source of truth for reserve and keep-recent to
 }
 ```
 
-The extension is enabled by default; `PI_ASYNC_PREFIX_COMPACTION=0` disables it. `PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS=0` disables the timeout.
+The extension is enabled by default; `PI_ASYNC_PREFIX_COMPACTION=0` disables it. `PI_COMPACTION_MODE=normal` separately leaves native Pi compaction authoritative while retaining the selected async backend for a later switch back. `PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS=0` disables both ordinary-job and comparison timeouts.
 
 ## limitations
 
 - In-memory only: pending/ready summaries do not survive process restart or `/reload`.
-- One job only: pending/ready jobs block new jobs until applied, failed, or staled.
+- One job only: pending/ready jobs block new jobs until applied, failed, or staled. ChatGPT transport serializes persistent-profile access, and comparison itself is single-flight.
 - Preparation mirrors Pi's internal `prepareCompaction()` because it is not exported yet; this should be replaced with the real exported function if Pi exposes it.
 - Automatic start requires a non-empty token window: `floor(contextWindow * PI_ASYNC_PREFIX_COMPACTION_START_RATIO) < tokens <= contextWindow - reserveTokens`.
 - Ready summaries usually wait for `ctx.isIdle()` and no pending queued messages; an abortable active turn over the async threshold is aborted and compacted like Pi's normal compaction path.
-- No metrics service, provider billing integration, or separate status command. Package authors can opt into synchronous structured lifecycle events through `registerAsyncCompaction(..., { onLifecycleEvent })`; see [the adapter guide](./docs/async-compaction-adapters.md#lifecycle-diagnostics).
+- No metrics service, provider billing integration, or separate status command. Comparison reports contain only per-backend status/duration/output length/error/raw filename and a shared-preparation digest over the full exact input without embedding raw context; raw summaries remain in their separate private Markdown files. Package authors can opt into synchronous structured lifecycle events through `registerAsyncCompaction(..., { onLifecycleEvent })`; see [the adapter guide](./docs/async-compaction-adapters.md#lifecycle-diagnostics).
 - The ChatGPT web flow is not run against a real account in CI. UI/accessibility selector changes, account interstitials, Cloudflare, and generation completion need manual headed-Chrome verification. Users must comply with ChatGPT terms; the extension does not bypass authentication, rate limits, or anti-bot controls.
 - `customInstructions` forces fallback to normal compaction.
 

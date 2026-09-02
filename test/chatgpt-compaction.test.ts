@@ -8,6 +8,7 @@ import {
 	extractCompletedAssistantResponse,
 	getChatGptResponseFailure,
 	hasAuthenticatedChatGptSession,
+	serializeChatGptTransportByProfile,
 } from "../src/chatgpt-web";
 import type { ChatGptTransport } from "../src/chatgpt-types";
 import type { LocalCompactionPreparation } from "../src/types";
@@ -49,6 +50,28 @@ describe("chatgpt web compaction", () => {
 		expect(request.prompt).toContain("<conversation>\n[User]: summarize this\n</conversation>");
 		expect(request.prompt).toContain("<previous-summary>\nexisting checkpoint\n</previous-summary>");
 		expect(request.prompt).toContain("## Goal");
+	});
+
+	test("serializes same-profile requests and aborts while waiting without invoking the transport", async () => {
+		let releaseFirst: (() => void) | undefined;
+		const requests: string[] = [];
+		const transport = serializeChatGptTransportByProfile("/private/profile", {
+			complete: async (request) => {
+				requests.push(request.id);
+				if (request.id === "first") await new Promise<void>((resolve) => { releaseFirst = resolve; });
+				return request.id;
+			},
+		});
+		const first = transport.complete({ id: "first", kind: "history", prompt: "first" }, new AbortController().signal);
+		await Promise.resolve();
+		await Promise.resolve();
+		const aborted = new AbortController();
+		const waiting = transport.complete({ id: "waiting", kind: "history", prompt: "waiting" }, aborted.signal);
+		aborted.abort();
+		releaseFirst?.();
+		await first;
+		await expect(waiting).rejects.toThrow("ChatGPT request aborted");
+		expect(requests).toEqual(["first"]);
 	});
 
 	test("returns a normal compaction result with Pi file-list semantics", async () => {

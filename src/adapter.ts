@@ -57,27 +57,38 @@ export type BuildAsyncCompactionResult = (
 	signal: AbortSignal,
 ) => Promise<CompactionResult>;
 
+export interface BuiltinAdapterIdentity {
+	readonly id: string;
+	readonly label: string;
+}
+
+export function prepareBuiltinPiCompaction(
+	ctx: ExtensionContext,
+	settings: ResolvedCompactionSettings,
+): BuiltinPiPreparedCompaction | undefined {
+	const branch = ctx.sessionManager.getBranch();
+	const preparation = prepareAsyncCompaction(branch, settings);
+	if (!preparation || !ctx.model) return undefined;
+
+	const snapshotLeafId = branch[branch.length - 1]?.id;
+	if (!snapshotLeafId) return undefined;
+
+	return {
+		preparation,
+		model: ctx.model,
+		thinkingLevel: getThinkingLevel(branch),
+		snapshotLeafId,
+	};
+}
+
 export function createBuiltinPiCompactionAdapter(
 	buildAsyncCompactionResult: BuildAsyncCompactionResult,
+	identity: BuiltinAdapterIdentity = { id: BUILTIN_ADAPTER_ID, label: BUILTIN_ADAPTER_LABEL },
 ): AsyncCompactionAdapter<BuiltinPiPreparedCompaction, CompactionResult> {
 	return {
-		id: BUILTIN_ADAPTER_ID,
-		label: BUILTIN_ADAPTER_LABEL,
-		prepare: ({ ctx, settings }) => {
-			const branch = ctx.sessionManager.getBranch();
-			const preparation = prepareAsyncCompaction(branch, settings);
-			if (!preparation || !ctx.model) return undefined;
-
-			const snapshotLeafId = branch[branch.length - 1]?.id;
-			if (!snapshotLeafId) return undefined;
-
-			return {
-				preparation,
-				model: ctx.model,
-				thinkingLevel: getThinkingLevel(branch),
-				snapshotLeafId,
-			};
-		},
+		id: identity.id,
+		label: identity.label,
+		prepare: ({ ctx, settings }) => prepareBuiltinPiCompaction(ctx, settings),
 		createSnapshot: ({ ctx, jobId, prepared, settings }) => ({
 			jobId,
 			sessionId: ctx.sessionManager.getSessionId(),

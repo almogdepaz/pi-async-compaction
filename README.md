@@ -106,6 +106,20 @@ Manual trigger, bypassing the early-start threshold:
 /async-compact-now
 ```
 
+## backends and comparison
+
+The default mode is `async`. Set `PI_COMPACTION_MODE=normal` or run `/compaction-mode normal` to disable all extension job starts and handoffs, leaving native Pi compaction untouched. `/compaction-mode async` restores extension behavior. Mode changes stale pending or ready work but do not alter the selected backend.
+
+The default async backend is `web`, which uses the authenticated ChatGPT browser profile and never resolves Pi provider credentials. Select `provider` to use Pi's normal model authentication and compaction request semantics instead:
+
+```bash
+PI_ASYNC_PREFIX_COMPACTION_BACKEND=provider
+```
+
+At runtime, switch future jobs with `/async-compaction-backend provider` or `/async-compaction-backend web`. Switching stales pending or ready work; backend selection and its prompt-version correlation are snapshotted at job start under one generic async-compaction identity.
+
+Run `/async-compact-compare` to prepare once and send that exact compacted context concurrently to both backends. Neither result enters the ready/apply lifecycle or changes the session. One comparison runs at a time and uses `PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS`; timeout or cancellation preserves any completed side. The command writes private (`0700` directory, `0600` files) provider/web raw Markdown, facts-only metadata (status, duration, output length, error, raw filename, and a digest of the full shared preparation; no raw context), and a CSP-hardened escaped side-by-side HTML report under `~/.pi/compaction-comparisons/`. It notifies the report path before macOS attempts to open it; opener failures are warnings. Comparison explicitly sends the compacted context to both your configured provider and logged-in ChatGPT account.
+
 ## for compaction package authors (experimental)
 
 If your package currently does slow work inside `session_before_compact`, use `pi-async-compaction/core` to run that work in the background and hand off a ready `CompactionResult` later.
@@ -168,6 +182,8 @@ See also [docs/async-context-compaction.md](docs/async-context-compaction.md) an
 # optional; built-in default is 0.8, use 0.5 to start precomputing around half context
 PI_ASYNC_PREFIX_COMPACTION_START_RATIO=0.5
 PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS=300000
+# optional; web is the default, provider uses Pi model authentication
+PI_ASYNC_PREFIX_COMPACTION_BACKEND=web
 
 # optional ChatGPT web backend settings
 PI_ASYNC_PREFIX_COMPACTION_CHATGPT_PROFILE_DIR="$HOME/.pi/chatgpt-web-compaction"
