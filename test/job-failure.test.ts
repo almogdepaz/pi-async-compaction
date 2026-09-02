@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { InvalidationReason } from "../src/constants";
+import { InvalidationReason, SUMMARY_PROMPT_VERSION } from "../src/constants";
 import { startAsyncJobWithDeps } from "../src/job";
 import { createRuntimeState } from "../src/runtime-state";
 import type { AsyncCompactionLifecycleEvent } from "../src/core";
@@ -47,7 +47,7 @@ describe("startAsyncJob lifecycle", () => {
 		state.lastHandedOff = {
 			adapterId: state.adapterId,
 			jobId: state.jobId ?? "",
-			promptVersion: "pi-compact-background-v1",
+			promptVersion: SUMMARY_PROMPT_VERSION,
 		};
 
 		onApplyError?.(new Error("render failed"));

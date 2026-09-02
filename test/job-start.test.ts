@@ -187,7 +187,7 @@ describe("startAsyncJob lifecycle", () => {
 
 		expect(state.status).toBe("pending");
 		expect(state.jobId).toBe(builtinJobId);
-		expect(statusValues).toEqual(["built-in Pi compaction: preparing"]);
+		expect(statusValues).toEqual(["ChatGPT web compaction: preparing"]);
 	});
 
 	test("namespaces pending job ids and status by adapter identity and label", () => {
@@ -264,7 +264,7 @@ describe("startAsyncJob lifecycle", () => {
 		expect(state.status).toBe("ready");
 		expect(state.ready?.result.summary).toBe("async summary");
 		expect(state.ready?.result.details?.asyncPrefixCompaction.jobId).toBe(builtinJobId);
-		expect(statusValues).toEqual(["built-in Pi compaction: preparing", undefined]);
+		expect(statusValues).toEqual(["ChatGPT web compaction: preparing", undefined]);
 	});
 
 	test("triggers Pi compaction when a background job becomes ready while idle", async () => {

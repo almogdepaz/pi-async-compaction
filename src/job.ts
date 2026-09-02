@@ -2,7 +2,7 @@ import type { Api, Model, ProviderHeaders, RetryPolicy } from "@earendil-works/p
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CompactionResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { compact } from "@earendil-works/pi-coding-agent";
-import { createBuiltinPiCompactionAdapter } from "./adapter";
+import { createChatGptWebCompactionAdapter } from "./adapter";
 import type { AsyncCompactionAdapter } from "./adapter";
 import { InvalidationReason } from "./constants";
 import { emitLifecycleEvent, getLifecycleDurationMs } from "./diagnostics";
@@ -339,7 +339,7 @@ function markPending(state: RuntimeState, jobId: string, abortController: AbortC
 }
 
 function getAdapter(deps: StartAsyncJobDependencies): AsyncCompactionAdapter<unknown, unknown> {
-	return deps.adapter ?? createBuiltinPiCompactionAdapter(deps.buildAsyncCompactionResult) as AsyncCompactionAdapter<unknown, unknown>;
+	return deps.adapter ?? createChatGptWebCompactionAdapter() as AsyncCompactionAdapter<unknown, unknown>;
 }
 
 export function startAsyncJobWithDeps(

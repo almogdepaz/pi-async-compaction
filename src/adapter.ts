@@ -2,6 +2,9 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CompactionResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { BUILTIN_ADAPTER_ID, BUILTIN_ADAPTER_LABEL, SUMMARY_PROMPT_VERSION } from "./constants";
+import { buildChatGptWebCompactionResult } from "./chatgpt-compaction";
+import { createChatGptWebTransport } from "./chatgpt-web";
+import type { ChatGptTransport } from "./chatgpt-types";
 import { prepareAsyncCompaction } from "./preparation";
 import type { LocalCompactionPreparation, ResolvedCompactionSettings, Snapshot } from "./types";
 import { getThinkingLevel, modelKey, settingsKey } from "./utils";
@@ -89,4 +92,14 @@ export function createBuiltinPiCompactionAdapter(
 			buildAsyncCompactionResult(prepared.preparation, prepared.model, ctx, prepared.thinkingLevel, signal),
 		toCompaction: ({ result }) => result,
 	};
+}
+
+/** The package default: browser-authenticated ChatGPT summary generation. */
+export function createChatGptWebCompactionAdapter(
+	transport: ChatGptTransport = createChatGptWebTransport(),
+): AsyncCompactionAdapter<BuiltinPiPreparedCompaction, CompactionResult> {
+	return createBuiltinPiCompactionAdapter(
+		(preparation, _model, _ctx, _thinkingLevel, signal) =>
+			buildChatGptWebCompactionResult(preparation, signal, transport),
+	);
 }

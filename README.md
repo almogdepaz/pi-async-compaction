@@ -12,10 +12,12 @@ pi install npm:pi-async-compaction
 
 Async compaction prepares Pi-compatible compaction summaries before you hit the limit, then applies a ready summary through Pi's normal compaction flow. If an abortable active turn is already over the async threshold, it aborts, compacts, then automatically sends `continue` once Pi persists the compaction.
 
+> **privacy:** automatic compaction uploads the serialized conversation being compacted, previous summaries, and tool output to the logged-in ChatGPT account. Do not enable this backend for sensitive sessions unless that transfer is acceptable.
+
 ## why install it
 
 - less waiting when context gets large
-- Pi-compatible summaries generated with Pi's exported compaction logic
+- ChatGPT web summaries using a dedicated, logged-in Chrome profile; no Pi model credentials are used for async summaries
 - safe idle apply, plus abort-and-compact with auto-resume when an active turn is already over the async threshold
 - status-line visibility while a background job is pending or ready
 - manual `/compact` and Pi's normal threshold/overflow compaction still work
@@ -28,7 +30,7 @@ Best for long coding sessions, repo audits, multi-file edits, and context-heavy 
 | --- | --- |
 | waits to summarize when compaction is triggered | prepares the summary earlier in the background |
 | can land right before your next turn continues | usually applies at an idle boundary; over the async threshold it can abort, compact, and auto-resume |
-| uses Pi's built-in compaction behavior | also uses Pi's built-in compaction behavior |
+| uses Pi's built-in compaction behavior | uses an authenticated ChatGPT web session while preserving Pi's preparation, validation, and apply lifecycle |
 | visible as a synchronous pause | visible as a quiet status-line job |
 
 ## install
@@ -48,12 +50,14 @@ pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.8
 Local development:
 
 ```bash
+bun install
 pi install .
 ```
 
 or test for one run:
 
 ```bash
+bun install
 pi -e .
 ```
 
@@ -64,19 +68,19 @@ pi -e .
 When the context crosses the async start window, the extension starts a background summary and keeps chat output quiet:
 
 ```text
-status: built-in Pi compaction: preparing
+status: ChatGPT web compaction: preparing
 ```
 
 When the summary is ready but Pi is below the async threshold, not abortable, or has queued messages, it waits instead of interrupting the active turn:
 
 ```text
-status: built-in Pi compaction: ready
+status: ChatGPT web compaction: ready
 ```
 
 At the next safe idle boundary, Pi's normal compaction flow consumes the ready summary and the extension emits a compact notification:
 
 ```text
-Applied ready built-in Pi compaction
+Applied ready ChatGPT web compaction
 ```
 
 The static preview above is also used for the pi.dev package gallery.
@@ -86,7 +90,7 @@ The static preview above is also used for the pi.dev package gallery.
 Async compaction precomputes summaries early, then applies them only at a safe boundary:
 
 1. after a turn, if context usage crosses the async start threshold, a background summary starts
-2. the background job reuses Pi's compaction preparation/generation behavior so the summary stays Pi-compatible
+2. the background job reuses Pi's preparation and sends its structured checkpoint prompt to a fresh ChatGPT web chat; it never resolves Pi provider credentials
 3. when the summary is ready, the extension applies it immediately if Pi is idle and has no queued messages
 4. if Pi is actively responding, abortable, has no queued messages, and is still over the async threshold, it aborts and triggers Pi compaction
 5. after Pi persists that extension-provided compaction, the extension sends `continue` to resume work
@@ -158,15 +162,31 @@ Relevant phrases: Pi async compaction, Pi background compaction, async context c
 
 See also [docs/async-context-compaction.md](docs/async-context-compaction.md) and [llms.txt](llms.txt).
 
-## env config
+## env config and ChatGPT login
 
 ```bash
 # optional; built-in default is 0.8, use 0.5 to start precomputing around half context
 PI_ASYNC_PREFIX_COMPACTION_START_RATIO=0.5
 PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS=300000
+
+# optional ChatGPT web backend settings
+PI_ASYNC_PREFIX_COMPACTION_CHATGPT_PROFILE_DIR="$HOME/.pi/chatgpt-web-compaction"
+PI_ASYNC_PREFIX_COMPACTION_CHATGPT_URL=https://chatgpt.com/
+PI_ASYNC_PREFIX_COMPACTION_CHATGPT_RESPONSE_TIMEOUT_MS=120000
+PI_ASYNC_PREFIX_COMPACTION_CHATGPT_LOGIN_TIMEOUT_MS=300000
+# set to 1 only for debugging; headed system Chrome is the default
+PI_ASYNC_PREFIX_COMPACTION_CHATGPT_HEADLESS=0
 ```
 
-The extension is enabled by default; set `PI_ASYNC_PREFIX_COMPACTION=0` to disable. Reserve and keep-recent tokens come from Pi's normal `compaction` settings. Automatic background jobs only start when `floor(contextWindow * START_RATIO) < tokens <= contextWindow - reserveTokens`; if that window is empty, use a larger context model, lower the start ratio, or lower Pi's reserve tokens. Pi's normal compaction threshold remains `contextWindow - reserveTokens`; the async start ratio controls both how early the background summary is prepared and when a ready summary may abort-and-compact an active turn.
+Run `/async-compact-now` once to open the headed system Chrome window and log in to ChatGPT. The job waits for login for `PI_ASYNC_PREFIX_COMPACTION_CHATGPT_LOGIN_TIMEOUT_MS` (five minutes by default), then sends its compaction request; the dedicated persistent profile retains that login. Each job opens a fresh temporary chat and closes the browser context after its response. The default headed launch is `chromium.launchPersistentContext(profile, { channel: "chrome", headless: false })`; headless mode is opt-in because it can trigger Cloudflare verification.
+
+The extension is enabled by default; set `PI_ASYNC_PREFIX_COMPACTION=0` to disable. Reserve and keep-recent tokens come from Pi's normal `compaction` settings. Automatic background jobs only start when `floor(contextWindow * PI_ASYNC_PREFIX_COMPACTION_START_RATIO) < tokens <= contextWindow - reserveTokens`; if that window is empty, use a larger context model, lower the start ratio, or lower Pi's reserve tokens. Pi's normal compaction threshold remains `contextWindow - reserveTokens`; the async start ratio controls both how early the background summary is prepared and when a ready summary may abort-and-compact an active turn.
+
+### ChatGPT failure semantics and risks
+
+The browser backend does not call `ctx.modelRegistry.getApiKeyAndHeaders()` and never falls back to Pi provider usage. Login-required, Cloudflare, rate-limit, selector-change, empty, incomplete, stalled, abort, and timeout failures mark only the async job failed or stale; Pi's independent native `/compact` and threshold compaction remain available. This automation must comply with ChatGPT terms and account policy; it does not attempt to bypass login, rate limits, or anti-bot controls.
+
+Deterministic tests cover prompt, result, and conversion helpers; real selectors, session checks, and UI behavior require manual headed-Chrome verification. They are **not** exercised against a real logged-in ChatGPT account in CI: UI/accessibility changes, account-specific interstitials, Cloudflare, and generation completion behavior require manual headed-Chrome verification after upgrades.
 
 ## lifecycle diagnostics
 

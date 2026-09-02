@@ -1,8 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createBuiltinPiCompactionAdapter } from "./adapter";
+import { createChatGptWebCompactionAdapter } from "./adapter";
 import { registerAsyncCompaction } from "./core";
 import type { AsyncCompactionCoreDependencies } from "./core";
-import { buildAsyncCompactionResult } from "./job";
 
 export default function asyncPrefixCompaction(
 	pi: ExtensionAPI,
@@ -10,7 +9,7 @@ export default function asyncPrefixCompaction(
 ): void {
 	registerAsyncCompaction(
 		pi,
-		createBuiltinPiCompactionAdapter(buildAsyncCompactionResult),
+		createChatGptWebCompactionAdapter(),
 		{ commandName: "async-compact-now" },
 		injectedDeps,
 	);

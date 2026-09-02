@@ -179,7 +179,8 @@ export function extensionHarness(deps?: Parameters<typeof asyncPrefixCompaction>
 		},
 	} as unknown as ExtensionContext;
 
-	asyncPrefixCompaction(pi, deps);
+	// Command-harness tests do not exercise the browser transport; avoid launching Chrome in detached jobs.
+	asyncPrefixCompaction(pi, deps ?? { startAsyncJob: () => "started" as const });
 
 	return { handlers, commands, notifyMessages, statusValues, toolExpansionValues, sentUserMessages, ctx };
 }

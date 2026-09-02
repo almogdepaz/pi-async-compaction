@@ -26,7 +26,7 @@ describe("extension hooks", () => {
 	});
 
 	test("manual trigger command does not write status text to chat when a job starts", async () => {
-		const { commands, notifyMessages, ctx } = extensionHarness();
+		const { commands, notifyMessages, ctx } = extensionHarness({ startAsyncJob: () => "started" });
 		const command = commands.get("async-compact-now");
 		if (!command) throw new Error("async-compact-now command was not registered");
 
@@ -39,7 +39,7 @@ describe("extension hooks", () => {
 		const previous = process.env.PI_ASYNC_PREFIX_COMPACTION;
 		process.env.PI_ASYNC_PREFIX_COMPACTION = "0";
 		try {
-			const { commands, notifyMessages, ctx } = extensionHarness();
+			const { commands, notifyMessages, ctx } = extensionHarness({ startAsyncJob: () => "disabled" });
 			const command = commands.get("async-compact-now");
 			if (!command) throw new Error("async-compact-now command was not registered");
 
@@ -56,7 +56,10 @@ describe("extension hooks", () => {
 	});
 
 	test("manual trigger reports when a job is already pending", async () => {
-		const { commands, notifyMessages, ctx } = extensionHarness();
+		let starts = 0;
+		const { commands, notifyMessages, ctx } = extensionHarness({
+			startAsyncJob: () => ++starts === 1 ? "started" : "already_pending",
+		});
 		const command = commands.get("async-compact-now");
 		if (!command) throw new Error("async-compact-now command was not registered");
 		const commandCtx = { ...manualCommandContext(), ui: ctx.ui } as ExtensionContext;
@@ -223,7 +226,7 @@ describe("extension hooks", () => {
 		);
 
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(notifyMessages).toEqual(["Applied ready built-in Pi compaction"]);
+		expect(notifyMessages).toEqual(["Applied ready ChatGPT web compaction"]);
 		expect(sentUserMessages).toEqual(["continue"]);
 	});
 

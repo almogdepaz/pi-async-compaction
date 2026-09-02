@@ -77,6 +77,6 @@ describe("startAsyncJob lifecycle", () => {
 
 		expect(state.status).toBe("stale");
 		expect(state.reason).toBe(InvalidationReason.TIMEOUT);
-		expect(statusValues).toEqual(["built-in Pi compaction: preparing", undefined]);
+		expect(statusValues).toEqual(["ChatGPT web compaction: preparing", undefined]);
 	});
 });

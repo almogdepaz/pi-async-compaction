@@ -31,7 +31,7 @@ Use `pi-async-compaction` for:
 
 ## why not just call compact earlier?
 
-The extension preserves Pi-compatible compaction behavior. It reuses Pi's compaction preparation and generation behavior for background summaries, then hands a validated ready result back through Pi's `session_before_compact` flow.
+The extension preserves Pi's compaction preparation, validation, and apply lifecycle. Its default background summary is generated through a logged-in ChatGPT web session, then handed back through Pi's `session_before_compact` flow without resolving Pi model credentials.
 
 It avoids applying compaction while queued messages could be reordered. For an over-threshold active turn with no queued messages, this extension aborts first, applies the ready summary, and resumes with a single `continue` message after `session_compact` confirms persistence.
 
