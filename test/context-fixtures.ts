@@ -154,7 +154,10 @@ export function extensionHarness(deps?: Parameters<typeof asyncPrefixCompaction>
 	const sentUserMessages: string[] = [];
 	const pi = {
 		on: (eventName: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => {
-			handlers.set(eventName, handler);
+			const previous = handlers.get(eventName);
+			handlers.set(eventName, previous
+				? async (event, ctx) => { await previous(event, ctx); return handler(event, ctx); }
+				: handler);
 		},
 		registerCommand: (name: string, command: { readonly handler: (args: string, ctx: ExtensionContext) => unknown }) => {
 			commands.set(name, command);
@@ -179,8 +182,12 @@ export function extensionHarness(deps?: Parameters<typeof asyncPrefixCompaction>
 		},
 	} as unknown as ExtensionContext;
 
-	// Command-harness tests do not exercise the browser transport; avoid launching Chrome in detached jobs.
-	asyncPrefixCompaction(pi, deps ?? { startAsyncJob: () => "started" as const });
+	// Lifecycle tests opt in explicitly; startup-default behavior is covered by backend configuration tests.
+	asyncPrefixCompaction(pi, {
+		getInitialMode: () => "async",
+		startAsyncJob: () => "started" as const,
+		...deps,
+	});
 
 	return { handlers, commands, notifyMessages, statusValues, toolExpansionValues, sentUserMessages, ctx };
 }

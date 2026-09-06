@@ -20,7 +20,7 @@ export function getCompactionBackend(): CompactionBackend {
 }
 
 export function getCompactionMode(): CompactionMode {
-	return process.env.PI_COMPACTION_MODE === "normal" ? "normal" : "async";
+	return process.env.PI_COMPACTION_MODE === "async" ? "async" : "normal";
 }
 
 interface BackendSnapshot {

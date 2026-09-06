@@ -48,13 +48,15 @@ function comparisonFixture() {
 }
 
 describe("compaction backend comparison", () => {
-	test("defaults to web/async and accepts only explicit startup selections", () => {
+	test("defaults to web/normal and requires exact async startup opt-in", () => {
 		withEnvironment("PI_ASYNC_PREFIX_COMPACTION_BACKEND", undefined, () => expect(getCompactionBackend()).toBe("web"));
 		withEnvironment("PI_ASYNC_PREFIX_COMPACTION_BACKEND", "provider", () => expect(getCompactionBackend()).toBe("provider"));
 		withEnvironment("PI_ASYNC_PREFIX_COMPACTION_BACKEND", "anything-else", () => expect(getCompactionBackend()).toBe("web"));
-		withEnvironment("PI_COMPACTION_MODE", undefined, () => expect(getCompactionMode()).toBe("async"));
+		withEnvironment("PI_COMPACTION_MODE", undefined, () => expect(getCompactionMode()).toBe("normal"));
+		withEnvironment("PI_COMPACTION_MODE", "async", () => expect(getCompactionMode()).toBe("async"));
+		withEnvironment("PI_COMPACTION_MODE", "ASYNC", () => expect(getCompactionMode()).toBe("normal"));
 		withEnvironment("PI_COMPACTION_MODE", "normal", () => expect(getCompactionMode()).toBe("normal"));
-		withEnvironment("PI_COMPACTION_MODE", "anything-else", () => expect(getCompactionMode()).toBe("async"));
+		withEnvironment("PI_COMPACTION_MODE", "anything-else", () => expect(getCompactionMode()).toBe("normal"));
 	});
 
 	test("uses a stable generic identity and snapshots provider routing and prompt correlation", async () => {

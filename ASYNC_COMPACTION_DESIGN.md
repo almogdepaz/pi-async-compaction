@@ -1,6 +1,6 @@
 # async compaction design
 
-This Pi extension precomputes Pi-compatible compaction summaries in the background when compaction mode is `async` (the default), usually waits for a safe idle boundary before triggering Pi's compaction flow, and supplies the ready summary through Pi's normal compaction hook. `normal` mode starts and hands off no extension work, leaving native Pi compaction untouched. If a ready result exists during an abortable active turn over the async threshold, it follows Pi's normal compaction behavior by aborting before compacting.
+This Pi extension precomputes Pi-compatible compaction summaries in the background when compaction mode is explicitly set to `async`, usually waits for a safe idle boundary before triggering Pi's compaction flow, and supplies the ready summary through Pi's normal compaction hook. Startup defaults to `normal`; only exact `PI_COMPACTION_MODE=async` opts in. `normal` mode starts and hands off no extension work, leaving native Pi compaction untouched. If a ready result exists during an abortable active turn over the async threshold, it follows Pi's normal compaction behavior by aborting before compacting.
 
 Code entrypoint: [`src/index.ts`](./src/index.ts)
 Experimental adapter entrypoint for other packages: [`src/core.ts`](./src/core.ts)
@@ -113,7 +113,7 @@ Pi does not currently export `prepareCompaction()`, so the extension mirrors Pi'
 - `buildSessionContext()` plus usage-aware local token accounting for token counts
 - local file-operation extraction matching Pi's `read`/`write`/`edit` handling
 
-The actual summary is generated through the selected typed backend: ChatGPT web by default, or Pi provider compaction with Pi's resolved authentication semantics. Prompt construction is separate from browser automation and preserves Pi's structured checkpoint format, previous-summary update semantics, split-turn summaries, and file-operation tags. The active Pi model and thinking level stay in the snapshot solely for generic validation; the default backend does not resolve provider keys, headers, base URLs, environments, retry settings, or any other Pi model-auth data.
+The actual summary is generated through the selected typed backend: ChatGPT web by default after explicit login/readiness and async-mode opt-in, or Pi provider compaction with Pi's resolved authentication semantics. Prompt construction is separate from browser automation and preserves Pi's structured checkpoint format, previous-summary update semantics, split-turn summaries, and file-operation tags. The active Pi model and thinking level stay in the snapshot solely for generic validation; the default backend does not resolve provider keys, headers, base URLs, environments, retry settings, or any other Pi model-auth data.
 
 ## prefix/tail partition
 
@@ -180,20 +180,22 @@ Environment variables:
 # optional; built-in default is 0.8, use 0.5 to start precomputing around half context
 PI_ASYNC_PREFIX_COMPACTION_START_RATIO=0.5
 PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS=300000
-# async is the default; normal leaves native Pi compaction untouched
+# exact startup opt-in; missing or any other value leaves native Pi compaction untouched
 PI_COMPACTION_MODE=async
 # web is the default; provider uses Pi model authentication
 PI_ASYNC_PREFIX_COMPACTION_BACKEND=web
 
-# headed system Chrome is the default; log in once in this dedicated profile
-PI_ASYNC_PREFIX_COMPACTION_CHATGPT_PROFILE_DIR="$HOME/.pi/chatgpt-web-compaction"
+# stores explicit-login readiness and the dedicated persistent Brave profile
+PI_ASYNC_PREFIX_COMPACTION_CHATGPT_STATE_DIR="$HOME/.pi/chatgpt-web-compaction"
+# origin must be exactly https://chatgpt.com with no URL credentials; path/query/fragment are allowed
 PI_ASYNC_PREFIX_COMPACTION_CHATGPT_URL=https://chatgpt.com/
 PI_ASYNC_PREFIX_COMPACTION_CHATGPT_RESPONSE_TIMEOUT_MS=120000
 PI_ASYNC_PREFIX_COMPACTION_CHATGPT_LOGIN_TIMEOUT_MS=300000
-PI_ASYNC_PREFIX_COMPACTION_CHATGPT_HEADLESS=0
 ```
 
-The browser opens a fresh temporary chat for each request and closes its context on completion or abort. A headed manual `/async-compact-now` job waits for one-time login up to `PI_ASYNC_PREFIX_COMPACTION_CHATGPT_LOGIN_TIMEOUT_MS`; `PI_ASYNC_PREFIX_COMPACTION_CHATGPT_HEADLESS=1` is diagnostic-only because headless ChatGPT is known to trigger Cloudflare on the supported macOS setup. Login, Cloudflare, rate-limit, selector-change, empty/incomplete response, abort, and browser timeout failures fail or stale only the async job; they never fall back to Pi provider authentication. Pi's native compaction remains independent.
+The web backend is macOS/Brave-specific; other platforms must use the provider backend. `/chatgpt-web-login` is an experimental two-stage interactive path. It starts the dedicated persistent profile as ordinary headed Brave with only `--user-data-dir`, first-run/default-browser suppression, and Chromium's ordinary `--disable-background-mode` close-window behavior; the user signs in, returns to Pi, and confirms. Pi then gracefully terminates only its owned direct process and waits for bounded profile release before headless verification. The interactive phase has no Playwright, CDP/listening port, AppleScript, or prompt submission. The single `PI_ASYNC_PREFIX_COMPACTION_CHATGPT_LOGIN_TIMEOUT_MS` covers direct login and later verification. A naturally zero-exit direct process also proceeds to verification. Only then does `playwright-core` launch the same profile headlessly, navigate to credential-free exact `https://chatgpt.com`, reject challenge/rate-limit/wrong-origin states, and require structured `/api/auth/session` `user.id`. A structured non-empty id permits a non-secret version-3 `.pi-compaction-ready.json` marker (`0600`) under the private state directory (`0700`); the marker stores only a SHA-256 account binding. This experiment follows a failed headed-Playwright smoke that reached OpenAI redirects and Cloudflare challenges before readiness; it does not bypass those controls.
+
+Ordinary browser compaction requires that marker before Brave launches. `playwright-core` launches the same dedicated profile headlessly with the explicit Brave executable and no listening CDP port. It validates exact ChatGPT origin and the bound live account before composer access, submits once, extracts response-local rendered HTML, and closes its browser context on success, error, or cancellation. Missing/legacy readiness launches nothing; failed/nonzero/timed-out/cancelled direct login never launches verification; session expiry and account mismatch clear readiness and submit nothing. Login and compaction serialize profile access; profile-lock failures are actionable. Browser failures have no provider or headed fallback.
 
 Pi compaction settings remain the source of truth for reserve and keep-recent tokens:
 
@@ -207,17 +209,17 @@ Pi compaction settings remain the source of truth for reserve and keep-recent to
 }
 ```
 
-The extension is enabled by default; `PI_ASYNC_PREFIX_COMPACTION=0` disables it. `PI_COMPACTION_MODE=normal` separately leaves native Pi compaction authoritative while retaining the selected async backend for a later switch back. `PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS=0` disables both ordinary-job and comparison timeouts.
+The extension lifecycle switch is enabled by default; `PI_ASYNC_PREFIX_COMPACTION=0` disables it. Startup mode is nevertheless `normal`, and only exact `PI_COMPACTION_MODE=async` opts into extension work. Runtime mode changes retain the selected async backend for a later switch back. `PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS=0` disables both ordinary-job and comparison timeouts.
 
 ## limitations
 
 - In-memory only: pending/ready summaries do not survive process restart or `/reload`.
-- One job only: pending/ready jobs block new jobs until applied, failed, or staled. ChatGPT transport serializes persistent-profile access, and comparison itself is single-flight.
+- One job only: pending/ready jobs block new jobs until applied, failed, or staled. ChatGPT login and transport serialize dedicated-Brave profile access through one ownership boundary, and comparison itself is single-flight.
 - Preparation mirrors Pi's internal `prepareCompaction()` because it is not exported yet; this should be replaced with the real exported function if Pi exposes it.
 - Automatic start requires a non-empty token window: `floor(contextWindow * PI_ASYNC_PREFIX_COMPACTION_START_RATIO) < tokens <= contextWindow - reserveTokens`.
 - Ready summaries usually wait for `ctx.isIdle()` and no pending queued messages; an abortable active turn over the async threshold is aborted and compacted like Pi's normal compaction path.
 - No metrics service, provider billing integration, or separate status command. Comparison reports contain only per-backend status/duration/output length/error/raw filename and a shared-preparation digest over the full exact input without embedding raw context; raw summaries remain in their separate private Markdown files. Package authors can opt into synchronous structured lifecycle events through `registerAsyncCompaction(..., { onLifecycleEvent })`; see [the adapter guide](./docs/async-compaction-adapters.md#lifecycle-diagnostics).
-- The ChatGPT web flow is not run against a real account in CI. UI/accessibility selector changes, account interstitials, Cloudflare, and generation completion need manual headed-Chrome verification. Users must comply with ChatGPT terms; the extension does not bypass authentication, rate limits, or anti-bot controls.
+- Deterministic ChatGPT tests exercise real marker filesystem behavior and an injected Playwright browser boundary, never a real account or browser. UI selector changes, account interstitials, profile locks, and generation completion still need manual headed-login/headless-completion verification. Users must comply with ChatGPT terms; the extension does not bypass authentication, rate limits, or anti-bot controls.
 - `customInstructions` forces fallback to normal compaction.
 
 ## installation and test commands

@@ -1,0 +1,23 @@
+# 036 status
+
+- phase: implementation and automated verification complete; manual live smoke remains
+- branch: `feature/chatgpt-web-compaction`
+- base commit: `d792020`
+- current assignment: none; final review `bc4f66ee-0db9-46e7-a3fc-2b5e0b69c3f6` completed with no findings
+- verification:
+  - red: `bun test test/backend-comparison.test.ts` failed as expected because `src/backend` did not exist.
+  - green: backend comparison tests passed after implementing configuration, concurrent comparison, private report generation, escaping, and opener boundaries.
+  - regression red: private-report test failed until the report directory itself was chmod `0700`; macOS opener test failed until platform was an injectable boundary.
+  - focused: `bun test test/backend-comparison.test.ts test/index.test.ts test/adapter.test.ts test/core.test.ts test/job-start.test.ts test/configuration.test.ts test/chatgpt-compaction.test.ts` passed (60 tests); `bun run typecheck`, `bun run check`, and `git diff --check` passed.
+  - correction red: `bun test test/backend-comparison.test.ts test/index.test.ts test/chatgpt-compaction.test.ts` failed as expected before implementation: missing generic identity/mode exports, missing profile serializer and mode commands; duplicate comparison test timed out without single-flight.
+  - correction green: `bun test test/backend-comparison.test.ts test/index.test.ts test/chatgpt-compaction.test.ts test/core.test.ts test/configuration.test.ts` passed (43 tests, 121 expectations), covering generic provider correlation, mode/backend independence and native handoff suppression, timeout/cancellation listener cleanup and partial retention, report metrics/CSP/unique IDs, nonfatal opener, single-flight comparison, and abortable per-profile serialization. `bun run typecheck`, `bun run check`, and `git diff --check` passed.
+  - final correction red: `bun test test/backend-comparison.test.ts` exposed the invented provider marker version, a prior provider failure being relabeled `timed_out`, and equal digests for distinct full preparations. A test-fixture assistant-message shape then failed typecheck; fixture evidence confirmed that an `AssistantMessage` requires API/provider/model/usage/stop fields, so the digest regression uses valid user messages instead.
+  - final correction green: `bun test test/backend-comparison.test.ts test/index.test.ts test/chatgpt-compaction.test.ts test/core.test.ts test/configuration.test.ts` passed (45 tests, 127 expectations). Provider markers use `pi-compact-background-v1`; per-side abort-kind snapshots preserve early failures; canonical full-input hashing sorts file-operation sets and never emits raw context. Existing abort-settlement cleanup removes its listener immediately and the focused cancellation test confirms parent listener removal. `bun run typecheck`, `bun run check`, and `git diff --check` passed.
+  - launch-gate red: the exact immediate-abort regression failed with both backend runners invoked once after cancellation.
+  - launch-gate green: `bun test test/backend-comparison.test.ts` passed (10 tests, 52 expectations); a deferred launch now checks `signal.aborted` before calling either runner. `bun run typecheck`, `bun run check`, and `git diff --check` passed.
+  - final parent gate: `bun test` passed 113 tests with 1 optional Pi parity test skipped and 0 failures; `bun run typecheck`, `bun run check`, and `git diff --check` passed.
+- changed files:
+  - `src/adapter.ts`, `src/backend.ts`, `src/comparison.ts`, `src/constants.ts`, `src/core.ts`, `src/index.ts`, `src/chatgpt-web.ts`
+  - `test/backend-comparison.test.ts`, `test/index.test.ts`, `test/chatgpt-compaction.test.ts`
+  - `README.md`, `ASYNC_COMPACTION_DESIGN.md`, `docs/async-context-compaction.md`, `package.json`, `.plans/036-compaction-backend-comparison.status.md`
+- blockers: authenticated ChatGPT live smoke still requires one-time user login; no live browser/provider call was made by focused tests.

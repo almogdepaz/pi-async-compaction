@@ -18,12 +18,171 @@ import {
 	validationEvent,
 } from "./test-fixtures";
 
+interface Deferred {
+	readonly promise: Promise<void>;
+	resolve(): void;
+}
+
+function deferred(): Deferred {
+	let resolve: (() => void) | undefined;
+	const promise = new Promise<void>((resolvePromise) => { resolve = resolvePromise; });
+	return { promise, resolve: () => resolve?.() };
+}
+
+async function flushMicrotasks(): Promise<void> {
+	for (let index = 0; index < 5; index++) await Promise.resolve();
+}
+
 describe("extension hooks", () => {
-	test("registers the manual command without a separate status command", () => {
+	test("registers manual compaction and explicit ChatGPT login without a separate status command", () => {
 		const { commands } = extensionHarness();
 
 		expect(commands.has("async-compact-now")).toBe(true);
+		expect(commands.has("chatgpt-web-login")).toBe(true);
 		expect(commands.has("async-compact-status")).toBe(false);
+	});
+
+	test("confirms direct Brave sign-in through Pi before login verification", async () => {
+		const confirmations: Array<{ readonly title: string; readonly message: string }> = [];
+		let confirmed: boolean | undefined;
+		const { commands, notifyMessages, ctx } = extensionHarness({
+			loginToChatGptWeb: async (_signal, dependencies) => {
+				confirmed = await dependencies?.confirmLogin?.(new AbortController().signal);
+			},
+		});
+		const login = commands.get("chatgpt-web-login");
+		if (!login) throw new Error("chatgpt-web-login command was not registered");
+		const ui = {
+			...ctx.ui,
+			confirm: async (title: string, message: string) => {
+				confirmations.push({ title, message });
+				return true;
+			},
+		};
+
+		await login.handler("", { ...ctx, ui, signal: undefined } as unknown as ExtensionContext);
+		expect(confirmed).toBeTrue();
+		expect(confirmations).toEqual([{
+			title: "ChatGPT sign-in complete?",
+			message: "Finish signing in to ChatGPT in the dedicated Brave window, return to Pi, then confirm to verify the session.",
+		}]);
+		expect(notifyMessages).toEqual([
+			"Sign in to ChatGPT in the dedicated Brave window, then return here to confirm.",
+			"ChatGPT web login ready",
+		]);
+	});
+
+	test("links and unlinks a supplied command signal to the owned login controller", async () => {
+		const parent = new AbortController();
+		let added = 0;
+		let removed = 0;
+		const parentSignal = {
+			get aborted() { return parent.signal.aborted; },
+			addEventListener: (...args: Parameters<AbortSignal["addEventListener"]>) => { added++; parent.signal.addEventListener(...args); },
+			removeEventListener: (...args: Parameters<AbortSignal["removeEventListener"]>) => { removed++; parent.signal.removeEventListener(...args); },
+		} as unknown as AbortSignal;
+		let ownedSignal: AbortSignal | undefined;
+		const { commands, notifyMessages, ctx } = extensionHarness({
+			loginToChatGptWeb: (signal) => {
+				ownedSignal = signal;
+				return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("owned login aborted")), { once: true }));
+			},
+		});
+		const login = commands.get("chatgpt-web-login");
+		if (!login) throw new Error("chatgpt-web-login command was not registered");
+
+		const command = login.handler("", { ...ctx, signal: parentSignal } as ExtensionContext);
+		await flushMicrotasks();
+		parent.abort();
+		await flushMicrotasks();
+
+		expect(ownedSignal?.aborted).toBeTrue();
+		await command;
+		expect({ added, removed }).toEqual({ added: 1, removed: 1 });
+		expect(notifyMessages).toEqual([
+			"Sign in to ChatGPT in the dedicated Brave window, then return here to confirm.",
+			"ChatGPT web login failed: owned login aborted",
+		]);
+	});
+
+	test("rejects a duplicate ChatGPT login instead of queueing another launch", async () => {
+		const releaseLogin = deferred();
+		let launches = 0;
+		const { commands, notifyMessages, ctx } = extensionHarness({
+			loginToChatGptWeb: async () => { launches++; await releaseLogin.promise; },
+		});
+		const login = commands.get("chatgpt-web-login");
+		if (!login) throw new Error("chatgpt-web-login command was not registered");
+
+		const first = login.handler("", { ...ctx, signal: undefined } as unknown as ExtensionContext);
+		await flushMicrotasks();
+		const second = login.handler("", { ...ctx, signal: undefined } as unknown as ExtensionContext);
+		await flushMicrotasks();
+
+		expect(launches).toBe(1);
+		expect(notifyMessages).toEqual([
+			"Sign in to ChatGPT in the dedicated Brave window, then return here to confirm.",
+			"ChatGPT web login already in progress",
+		]);
+		releaseLogin.resolve();
+		await Promise.all([first, second]);
+		expect(notifyMessages).toEqual([
+			"Sign in to ChatGPT in the dedicated Brave window, then return here to confirm.",
+			"ChatGPT web login already in progress",
+			"ChatGPT web login ready",
+		]);
+	});
+
+	test("aborts active login on shutdown while preserving core shutdown invalidation", async () => {
+		let runtimeState: import("../src/types").RuntimeState | undefined;
+		let ownedSignal: AbortSignal | undefined;
+		const { commands, handlers, notifyMessages, ctx } = extensionHarness({
+			startAsyncJob: (_jobCtx, state) => {
+				runtimeState = state;
+				state.status = "pending";
+				return "started";
+			},
+			loginToChatGptWeb: (signal) => {
+				ownedSignal = signal;
+				return new Promise((_, reject) => signal.addEventListener(
+					"abort",
+					() => reject(new Error("shutdown abort")),
+					{ once: true },
+				));
+			},
+		});
+		const start = commands.get("async-compact-now");
+		const login = commands.get("chatgpt-web-login");
+		const shutdown = handlers.get("session_shutdown");
+		if (!start || !login || !shutdown) throw new Error("expected login and shutdown lifecycle");
+		await start.handler("", ctx);
+		const command = login.handler("", { ...ctx, signal: undefined } as unknown as ExtensionContext);
+		await flushMicrotasks();
+
+		await shutdown({}, ctx);
+		await flushMicrotasks();
+		expect(ownedSignal?.aborted).toBeTrue();
+		await command;
+		expect(runtimeState?.status).toBe("stale");
+		expect(notifyMessages).toContain("ChatGPT web login failed: shutdown abort");
+	});
+
+	test("reports explicit ChatGPT login failures without starting compaction", async () => {
+		let starts = 0;
+		const { commands, notifyMessages, ctx } = extensionHarness({
+			loginToChatGptWeb: async () => { throw new Error("login timed out"); },
+			startAsyncJob: () => { starts++; return "started"; },
+		});
+		const login = commands.get("chatgpt-web-login");
+		if (!login) throw new Error("chatgpt-web-login command was not registered");
+
+		await login.handler("", { ...ctx, signal: new AbortController().signal } as ExtensionContext);
+
+		expect(starts).toBe(0);
+		expect(notifyMessages).toEqual([
+			"Sign in to ChatGPT in the dedicated Brave window, then return here to confirm.",
+			"ChatGPT web login failed: login timed out",
+		]);
 	});
 
 	test("manual trigger command does not write status text to chat when a job starts", async () => {
@@ -69,6 +228,62 @@ describe("extension hooks", () => {
 		await command.handler("", commandCtx);
 
 		expect(notifyMessages).toEqual(["async compaction not started: job already pending"]);
+	});
+
+	test("selects compaction mode when invoked without an argument", async () => {
+		const selectCalls: Array<{ readonly title: string; readonly options: string[] }> = [];
+		const { commands, notifyMessages, ctx } = extensionHarness({ getInitialMode: () => "normal" });
+		const mode = commands.get("compaction-mode");
+		if (!mode) throw new Error("expected mode command");
+		const ui = {
+			...ctx.ui,
+			select: async (title: string, options: string[]) => {
+				selectCalls.push({ title, options });
+				return "async";
+			},
+		};
+
+		await mode.handler("", { ...ctx, ui } as ExtensionContext);
+
+		expect(selectCalls).toEqual([{ title: "Compaction mode", options: ["normal", "async"] }]);
+		expect(notifyMessages).toEqual(["compaction mode set to async"]);
+	});
+
+	test("selects async backend when invoked without an argument and leaves state unchanged on cancellation", async () => {
+		const { commands, notifyMessages, ctx } = extensionHarness({ getInitialBackend: () => "provider" });
+		const backend = commands.get("async-compaction-backend");
+		if (!backend) throw new Error("expected backend command");
+		const ui = { ...ctx.ui, select: async () => undefined };
+
+		await backend.handler("", { ...ctx, ui } as ExtensionContext);
+		await backend.handler("web", ctx);
+
+		expect(notifyMessages).toEqual(["async compaction backend set to web"]);
+	});
+
+	test("retains direct scripted configuration arguments and rejects missing or invalid non-UI input", async () => {
+		const select = async (): Promise<string | undefined> => { throw new Error("selector must not run"); };
+		const { commands, ctx } = extensionHarness({ getInitialMode: () => "normal" });
+		const mode = commands.get("compaction-mode");
+		const backend = commands.get("async-compaction-backend");
+		if (!mode || !backend) throw new Error("expected configuration commands");
+		const nonUi = { ...ctx, hasUI: false, ui: { ...ctx.ui, select } } as ExtensionContext;
+		const messages: string[] = [];
+		const originalLog = console.log;
+		console.log = (message: string) => { messages.push(message); };
+		try {
+			await mode.handler("async", nonUi);
+			await backend.handler("invalid", nonUi);
+			await backend.handler("", nonUi);
+		} finally {
+			console.log = originalLog;
+		}
+
+		expect(messages).toEqual([
+			"compaction mode set to async",
+			"usage: /async-compaction-backend provider|web",
+			"usage: /async-compaction-backend provider|web",
+		]);
 	});
 
 	test("switches backend by invalidating pending work and clears its status", async () => {

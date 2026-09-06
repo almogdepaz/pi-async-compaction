@@ -4,20 +4,22 @@
 [![Pi package](https://img.shields.io/badge/pi-package-6f42c1)](https://pi.dev/packages/pi-async-compaction)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Async context compaction for the Pi coding agent: keep long Pi coding sessions responsive by precomputing background compaction summaries.
+Async context compaction for the Pi coding agent: keep long Pi coding sessions responsive by precomputing background compaction summaries. Installation is fail-safe: Pi starts in `normal` mode unless `PI_COMPACTION_MODE=async` is set exactly.
 
 ```bash
 pi install npm:pi-async-compaction
 ```
 
+Before enabling the default web backend, run `/chatgpt-web-login`. This experimental command opens the dedicated profile as ordinary headed Brave for manual sign-in; finish sign-in, return to Pi, and confirm. Pi then closes only its owned Brave process, verifies the released profile headlessly with structured ChatGPT session data, and records non-secret local readiness. This replaces the failed headed-Playwright smoke, which hit OpenAI redirects and Cloudflare challenges before readiness. Then opt in for the current session with `/compaction-mode` and choose `async`, or start a new Pi process with `PI_COMPACTION_MODE=async`.
+
 Async compaction prepares Pi-compatible compaction summaries before you hit the limit, then applies a ready summary through Pi's normal compaction flow. If an abortable active turn is already over the async threshold, it aborts, compacts, then automatically sends `continue` once Pi persists the compaction.
 
-> **privacy:** automatic compaction uploads the serialized conversation being compacted, previous summaries, and tool output to the logged-in ChatGPT account. Do not enable this backend for sensitive sessions unless that transfer is acceptable.
+> **privacy:** after async mode is enabled, web compaction uploads the serialized conversation being compacted, previous summaries, and tool output to the logged-in ChatGPT account. Do not enable this backend for sensitive sessions unless that transfer is acceptable.
 
 ## why install it
 
 - less waiting when context gets large
-- ChatGPT web summaries using a dedicated, logged-in Chrome profile; no Pi model credentials are used for async summaries
+- ChatGPT web summaries using a dedicated Brave profile; no Pi model credentials are used for async summaries
 - safe idle apply, plus abort-and-compact with auto-resume when an active turn is already over the async threshold
 - status-line visibility while a background job is pending or ready
 - manual `/compact` and Pi's normal threshold/overflow compaction still work
@@ -108,15 +110,15 @@ Manual trigger, bypassing the early-start threshold:
 
 ## backends and comparison
 
-The default mode is `async`. Set `PI_COMPACTION_MODE=normal` or run `/compaction-mode normal` to disable all extension job starts and handoffs, leaving native Pi compaction untouched. `/compaction-mode async` restores extension behavior. Mode changes stale pending or ready work but do not alter the selected backend.
+The startup mode is `normal`, leaving native Pi compaction untouched. Only exact `PI_COMPACTION_MODE=async` opts a new process into extension jobs; missing, differently cased, or other values remain `normal`. At runtime, `/compaction-mode` opens a cancellable selector; `/compaction-mode async|normal` remains available for scripts. Mode changes stale pending or ready work but do not alter the selected backend.
 
-The default async backend is `web`, which uses the authenticated ChatGPT browser profile and never resolves Pi provider credentials. Select `provider` to use Pi's normal model authentication and compaction request semantics instead:
+The default async backend is `web`, which uses the authenticated ChatGPT session in a dedicated Brave profile and never resolves Pi provider credentials. Select `provider` to use Pi's normal model authentication and compaction request semantics instead:
 
 ```bash
 PI_ASYNC_PREFIX_COMPACTION_BACKEND=provider
 ```
 
-At runtime, switch future jobs with `/async-compaction-backend provider` or `/async-compaction-backend web`. Switching stales pending or ready work; backend selection and its prompt-version correlation are snapshotted at job start under one generic async-compaction identity.
+At runtime, `/async-compaction-backend` opens a cancellable selector; `/async-compaction-backend provider|web` remains available for scripts. Switching stales pending or ready work; backend selection and its prompt-version correlation are snapshotted at job start under one generic async-compaction identity.
 
 Run `/async-compact-compare` to prepare once and send that exact compacted context concurrently to both backends. Neither result enters the ready/apply lifecycle or changes the session. One comparison runs at a time and uses `PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS`; timeout or cancellation preserves any completed side. The command writes private (`0700` directory, `0600` files) provider/web raw Markdown, facts-only metadata (status, duration, output length, error, raw filename, and a digest of the full shared preparation; no raw context), and a CSP-hardened escaped side-by-side HTML report under `~/.pi/compaction-comparisons/`. It notifies the report path before macOS attempts to open it; opener failures are warnings. Comparison explicitly sends the compacted context to both your configured provider and logged-in ChatGPT account.
 
@@ -156,7 +158,7 @@ Install `pi-async-compaction`:
 pi install npm:pi-async-compaction
 ```
 
-The extension precomputes Pi-compatible compaction summaries in the background and applies them through Pi's normal compaction flow when safe.
+After explicit async-mode opt-in, the extension precomputes Pi-compatible compaction summaries in the background and applies them through Pi's normal compaction flow when safe.
 
 ### Is there a Pi extension for background compaction?
 
@@ -182,27 +184,31 @@ See also [docs/async-context-compaction.md](docs/async-context-compaction.md) an
 # optional; built-in default is 0.8, use 0.5 to start precomputing around half context
 PI_ASYNC_PREFIX_COMPACTION_START_RATIO=0.5
 PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS=300000
-# optional; web is the default, provider uses Pi model authentication
+# required startup opt-in; any other value starts in normal mode
+PI_COMPACTION_MODE=async
+# optional; web is the async-backend default, provider uses Pi model authentication
 PI_ASYNC_PREFIX_COMPACTION_BACKEND=web
 
 # optional ChatGPT web backend settings
-PI_ASYNC_PREFIX_COMPACTION_CHATGPT_PROFILE_DIR="$HOME/.pi/chatgpt-web-compaction"
+# stores the non-secret readiness marker and dedicated persistent Brave profile
+PI_ASYNC_PREFIX_COMPACTION_CHATGPT_STATE_DIR="$HOME/.pi/chatgpt-web-compaction"
+# must have origin exactly https://chatgpt.com with no URL credentials; paths/queries/fragments are allowed
 PI_ASYNC_PREFIX_COMPACTION_CHATGPT_URL=https://chatgpt.com/
 PI_ASYNC_PREFIX_COMPACTION_CHATGPT_RESPONSE_TIMEOUT_MS=120000
 PI_ASYNC_PREFIX_COMPACTION_CHATGPT_LOGIN_TIMEOUT_MS=300000
-# set to 1 only for debugging; headed system Chrome is the default
-PI_ASYNC_PREFIX_COMPACTION_CHATGPT_HEADLESS=0
 ```
 
-Run `/async-compact-now` once to open the headed system Chrome window and log in to ChatGPT. The job waits for login for `PI_ASYNC_PREFIX_COMPACTION_CHATGPT_LOGIN_TIMEOUT_MS` (five minutes by default), then sends its compaction request; the dedicated persistent profile retains that login. Each job opens a fresh temporary chat and closes the browser context after its response. The default headed launch is `chromium.launchPersistentContext(profile, { channel: "chrome", headless: false })`; headless mode is opt-in because it can trigger Cloudflare verification.
+The web backend currently requires macOS and Brave; other platforms can select the `provider` backend. `/chatgpt-web-login` is an experimental two-stage flow for the dedicated persistent profile under `PI_ASYNC_PREFIX_COMPACTION_CHATGPT_STATE_DIR`: it starts ordinary headed Brave with its isolated user-data directory plus first-run/default-browser suppression and Chromium's normal `--disable-background-mode` close-window behavior, then asks you to finish sign-in, return to Pi, and confirm. On confirmation Pi gracefully terminates only its owned Brave process, waits for bounded profile release, then uses `playwright-core` headlessly to navigate to credential-free exact `https://chatgpt.com`, fail closed on challenge/rate-limit/wrong origin, and require structured `/api/auth/session` authentication. A natural zero-exit direct process is also verified; cancellation, nonzero exit, timeout, or abort never reaches verification. The prior headed-Playwright smoke failed through OpenAI redirects and Cloudflare before readiness; this experiment does not bypass those controls. After validation, login writes a non-secret version-3 `.pi-compaction-ready.json` marker (`0600`) under the private state directory (`0700`), bound to a SHA-256 hash of the authorized `user.id`.
 
-The extension is enabled by default; set `PI_ASYNC_PREFIX_COMPACTION=0` to disable. Reserve and keep-recent tokens come from Pi's normal `compaction` settings. Automatic background jobs only start when `floor(contextWindow * PI_ASYNC_PREFIX_COMPACTION_START_RATIO) < tokens <= contextWindow - reserveTokens`; if that window is empty, use a larger context model, lower the start ratio, or lower Pi's reserve tokens. Pi's normal compaction threshold remains `contextWindow - reserveTokens`; the async start ratio controls both how early the background summary is prepared and when a ready summary may abort-and-compact an active turn.
+Ordinary web compaction requires that marker before launching Brave. It uses `playwright-core` to launch the same dedicated profile headlessly, without a listening CDP port, then verifies exact ChatGPT origin and the bound live account before composer access. It sends once, extracts response-local rendered HTML, and closes the browser context on completion, error, or cancellation. Missing or legacy readiness launches nothing; expired sessions and account changes remove readiness and submit nothing. Login and compaction serialize profile ownership; a failed, timed-out, cancelled, or nonzero direct login never reaches headless verification. Browser failures never fall back to provider authentication or a headed browser.
+
+The extension's lifecycle switch remains enabled unless `PI_ASYNC_PREFIX_COMPACTION=0`, but startup mode defaults to `normal`; no extension jobs run until exact environment or runtime opt-in. Reserve and keep-recent tokens come from Pi's normal `compaction` settings. Automatic background jobs only start when `floor(contextWindow * PI_ASYNC_PREFIX_COMPACTION_START_RATIO) < tokens <= contextWindow - reserveTokens`; if that window is empty, use a larger context model, lower the start ratio, or lower Pi's reserve tokens. Pi's normal compaction threshold remains `contextWindow - reserveTokens`; the async start ratio controls both how early the background summary is prepared and when a ready summary may abort-and-compact an active turn.
 
 ### ChatGPT failure semantics and risks
 
-The browser backend does not call `ctx.modelRegistry.getApiKeyAndHeaders()` and never falls back to Pi provider usage. Login-required, Cloudflare, rate-limit, selector-change, empty, incomplete, stalled, abort, and timeout failures mark only the async job failed or stale; Pi's independent native `/compact` and threshold compaction remain available. This automation must comply with ChatGPT terms and account policy; it does not attempt to bypass login, rate limits, or anti-bot controls.
+The browser backend does not call `ctx.modelRegistry.getApiKeyAndHeaders()` and never falls back to Pi provider usage. Missing readiness, expired login, browser-permission, selector-change, empty, incomplete, stalled, abort, and timeout failures mark only the async job failed or stale; Pi's independent native `/compact` and threshold compaction remain available. This automation must comply with ChatGPT terms and account policy; it does not attempt to bypass login, rate limits, or anti-bot controls.
 
-Deterministic tests cover prompt, result, and conversion helpers; real selectors, session checks, and UI behavior require manual headed-Chrome verification. They are **not** exercised against a real logged-in ChatGPT account in CI: UI/accessibility changes, account-specific interstitials, Cloudflare, and generation completion behavior require manual headed-Chrome verification after upgrades.
+Deterministic tests use the real filesystem and an injected browser boundary to cover private marker creation, headed-login/headless-completion routing, pre-launch gating, account binding, serialization, authentication failures, abort propagation, and result conversion. They do **not** call a real browser or logged-in ChatGPT account in CI: UI selector changes, account interstitials, profile locks, and generation completion behavior require manual verification after upgrades.
 
 ## lifecycle diagnostics
 

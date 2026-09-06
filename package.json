@@ -49,6 +49,7 @@
     "src/comparison.ts",
     "src/core.ts",
     "src/constants.ts",
+    "src/chatgpt-brave.ts",
     "src/chatgpt-compaction.ts",
     "src/chatgpt-prompt.ts",
     "src/chatgpt-types.ts",
@@ -95,7 +96,7 @@
     "protobufjs": "7.6.5"
   },
   "dependencies": {
-    "playwright": "^1.62.1",
+    "playwright-core": "^1.62.1",
     "turndown": "^7.2.4"
   }
 }

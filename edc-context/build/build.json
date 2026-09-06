@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "edc-build-metadata",
+  "edcVersion": "1.1.5",
+  "layoutVersion": 2,
+  "runId": "build-20260831T162254Z-33795-25171",
+  "repository": {
+    "packageName": "pi-async-compaction",
+    "packageVersion": "0.1.7"
+  },
+  "modules": [
+    "pi-compaction"
+  ],
+  "moduleDiscovery": {
+    "sourceBodiesReadDuringAssembly": false,
+    "modules": [
+      {
+        "name": "pi-compaction",
+        "paths": [
+          "."
+        ],
+        "approxLoc": 0,
+        "doc": "edc-context/modules/pi-compaction.md"
+      }
+    ]
+  },
+  "inputs": {
+    "discoveryPlan": "module-plan.json",
+    "moduleMetadata": "build-modules.json",
+    "crossModuleNotes": "cross-module.md"
+  }
+}

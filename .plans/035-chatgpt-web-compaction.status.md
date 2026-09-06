@@ -1,0 +1,23 @@
+# 035 status
+
+- phase: committed and pushed; authenticated browser smoke blocked on login
+- implementer session: `8ae016f3-3379-488a-82bd-d28ba4b49a14` (`chatgpt-ui-implementation-terra`, `openai-codex/gpt-5.6-terra`)
+- reviewer session: `2c08b2b0-5f39-4b28-8afb-a714ba1e4c77` (`chatgpt-ui-review-terra`, endpoint `b9f6ab1f-062b-4e45-93f6-d3582d7f52c5`)
+- current assignment: none; implementation/review tasks acknowledged
+- delivery: commit `d792020` on `feature/chatgpt-web-compaction`, pushed to `origin/feature/chatgpt-web-compaction`
+- verification:
+  - red: `bun test test/chatgpt-compaction.test.ts` failed as expected because `src/chatgpt-compaction` did not exist.
+  - green: `bun test test/chatgpt-compaction.test.ts` passed (6 tests).
+  - focused: `bun test test/chatgpt-compaction.test.ts test/job-start.test.ts test/job-timeout.test.ts test/index.test.ts test/core.test.ts test/preparation.test.ts test/readme-notification.test.ts` passed (54 tests).
+  - implementer pre-correction final: `bun test` passed (93 pass, 1 opt-in Pi parity skip); `bun run typecheck`, `bun run check`, and `git diff --check` passed.
+  - correction red: `bun test test/chatgpt-compaction.test.ts` failed as expected for missing session/parser and page-local response extraction exports.
+  - correction green: `bun test test/chatgpt-compaction.test.ts` passed (9 tests).
+  - correction focused: `bun test test/chatgpt-compaction.test.ts test/index.test.ts test/readme-notification.test.ts` passed (23 tests); `bun run typecheck`, `bun run check`, and `git diff --check` passed.
+  - re-review red: `bun test test/chatgpt-compaction.test.ts` failed as expected for missing Markdown conversion export; the initial conversion used setext headings and failed the heading assertion.
+  - re-review green: `bun test test/chatgpt-compaction.test.ts` passed (10 tests); `bun run typecheck`, `bun run check`, and `git diff --check` passed.
+  - parent focused: `bun test test/chatgpt-compaction.test.ts test/index.test.ts` passed (23 tests); `bun run typecheck`, `bun run check`, and `git diff --check` passed.
+  - parent final: `bun test` passed (97 pass, 1 opt-in Pi parity skip, 0 fail).
+  - browser smoke: profile launch/cleanup worked; authenticated request did not run because `/api/auth/session` remained anonymous (`WARNING_BANNER` only) until the five-minute login timeout.
+- review: parent-owned independent review and two correction re-reviews completed; all verified findings resolved in `.plans/035-chatgpt-web-compaction.review.md`.
+- blockers: user must log in once through headed Chrome profile `~/.pi/chatgpt-web-compaction`, then rerun the real request/selector/markdown smoke.
+- progress: context and pinned Pi compaction exports/types inspected; ChatGPT backend, docs, tests, dependencies, and review corrections completed; implementation commit pushed.

@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 2,
+  "edcVersion": "1.1.5",
+  "repoContextFile": "edc-context/index.md",
+  "reports": {
+    "issues": "edc-context/reports/issues.md",
+    "complexity": "edc-context/reports/complexity.md"
+  },
+  "build": {
+    "buildInfoFile": "edc-context/build/build.json"
+  },
+  "policy": {
+    "defaultMode": "advisory",
+    "unmatchedPathPolicy": "warn-allow"
+  },
+  "modules": [
+    {
+      "name": "pi-compaction",
+      "doc": "edc-context/modules/pi-compaction.md",
+      "summary": "Async context compaction package for Pi: extension hooks, background job lifecycle, validation/handoff safety, provider auth forwarding, preparation parity, and experimental adapter API.",
+      "priority": 100,
+      "match": {
+        "globs": [
+          "**"
+        ]
+      }
+    }
+  ],
+  "unmapped": {
+    "allowedGlobs": []
+  },
+  "generatedAt": "2026-08-31T16:32:50Z",
+  "sourceCommit": "fb590f23c3073afe524df518171092a2f4fdf43c",
+  "coverage": {
+    "contextMappedFileCount": 74,
+    "contextlessFileCount": 0,
+    "uncoveredFileCount": 0,
+    "ambiguousPathCount": 0,
+    "ignoredFileCount": 0,
+    "ignoreSource": "none",
+    "ignoreGlobs": [],
+    "mappedFileCount": 74,
+    "unmappedFileCount": 0
+  }
+}
