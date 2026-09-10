@@ -8,6 +8,7 @@ import { createRuntimeState, getStatusKey, markStale } from "./runtime-state";
 import type { AsyncCompactionMarker, JobCorrelation, RuntimeState } from "./types";
 import { getAsyncCompactionMarker } from "./utils";
 import { validateReadyJob } from "./validation";
+import { isAstraRemoteContextRequired } from "./astra/activation";
 
 export type {
 	AdapterCompactionInput,
@@ -109,13 +110,19 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 	validateAdapterRegistration(pi, jobAdapter);
 	const deps = { ...defaultCoreDependencies, ...injectedDeps };
 	const state = createRuntimeState(adapter.id, adapter.label, options.onLifecycleEvent);
+	const isRemoteContextSession = (ctx: ExtensionContext): boolean =>
+		isAstraRemoteContextRequired(ctx.sessionManager.getEntries());
 
 	pi.on("turn_end", (_event, ctx) => {
+		if (isRemoteContextSession(ctx)) {
+			invalidateActiveJob(ctx, state, InvalidationReason.SYNC_FALLBACK);
+			return;
+		}
 		deps.startAsyncJob(ctx, state, { adapter: jobAdapter, force: false });
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
-		if (!ctx.hasPendingMessages()) deps.applyReadyCompaction(ctx, state);
+		if (!isRemoteContextSession(ctx) && !ctx.hasPendingMessages()) deps.applyReadyCompaction(ctx, state);
 	});
 
 	pi.on("model_select", (_event, ctx) => {
@@ -131,6 +138,10 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
+		if (isRemoteContextSession(ctx)) {
+			invalidateActiveJob(ctx, state, InvalidationReason.SYNC_FALLBACK);
+			return undefined;
+		}
 		const ready = state.ready;
 		if (!ready || state.status !== "ready") {
 			if (state.status === "pending") {

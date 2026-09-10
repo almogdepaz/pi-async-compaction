@@ -67,6 +67,7 @@ export function validationContext(entries: readonly SessionEntry[], contextWindo
 		model: testModel(contextWindow),
 		sessionManager: {
 			getSessionId: () => "session-1",
+			getEntries: () => [...entries],
 			getBranch: () => [...entries],
 			getLeafId: () => entries[entries.length - 1]?.id ?? null,
 		},
@@ -83,6 +84,7 @@ export function asyncJobContext(entries: readonly SessionEntry[], usageTokens = 
 		getContextUsage: () => ({ tokens: usageTokens, contextWindow }),
 		sessionManager: {
 			getSessionId: () => "session-1",
+			getEntries: () => [...entries],
 			getBranch: () => [...entries],
 			getLeafId: () => entries[entries.length - 1]?.id ?? null,
 		},

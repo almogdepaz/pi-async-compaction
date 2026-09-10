@@ -7,7 +7,7 @@ export interface ReleaseConsistencyInput {
 
 export function checkReleaseConsistency(input: ReleaseConsistencyInput): string[] {
 	const failures: string[] = [];
-	if (!/^\d+\.\d+\.\d+$/.test(input.version)) {
+	if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$/.test(input.version)) {
 		failures.push("package.json version must be an exact semantic version");
 		return failures;
 	}
@@ -15,7 +15,7 @@ export function checkReleaseConsistency(input: ReleaseConsistencyInput): string[
 	const releaseTag = `v${input.version}`;
 	const datedHeading = new RegExp(`^## ${escapeRegExp(input.version)} — \\d{4}-\\d{2}-\\d{2}$`, "m");
 	const hasDatedHeading = datedHeading.test(input.changelog);
-	const taggedInstall = `pi install git:github.com/almogdepaz/pi-async-compaction@${releaseTag}`;
+	const taggedInstall = `install git:github.com/almogdepaz/pi-async-compaction@${releaseTag}`;
 	const hasTaggedInstall = input.readme.includes(taggedInstall);
 	if (input.tagsAtHead.includes(releaseTag) || hasDatedHeading || hasTaggedInstall) {
 		if (!hasDatedHeading) {

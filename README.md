@@ -57,6 +57,17 @@ or test for one run:
 pi -e .
 ```
 
+## astra prerelease
+
+The `0.1.9-astra.0` Astra prerelease is not compatible with ordinary Pi installs. It requires the exact patched Pi `0.85.1` contract; semver matching alone is insufficient. Follow [the exact-base patch, build, and isolated activation procedure](docs/astra-remote-context.md#exact-host-build-and-isolated-activation), which installs the tagged extension through the patched CLI and an isolated `PI_CODING_AGENT_DIR`:
+
+```bash
+cd /path/to/pi-astra-host
+PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.0" node packages/coding-agent/dist/cli.js install git:github.com/almogdepaz/pi-async-compaction@v0.1.9-astra.0
+```
+
+Do not run the normal installation commands above for this prerelease; they continue to install published `0.1.8` into ordinary Pi.
+
 ## demo
 
 ![pi async compaction preview](media/social-preview.png)
@@ -201,7 +212,7 @@ bun run check
 bun pm pack --dry-run
 ```
 
-This package is tested against Pi `0.84.3` and `0.84.4`. Its declared peer range is `>=0.84.3 <0.85.0`; Pi provides the core packages at runtime.
+Published `0.1.8` was tested against Pi `0.84.3` and `0.84.4`, with peer range `>=0.84.3 <0.85.0`. The `0.1.9-astra.0` prerelease instead requires the exact patched Pi `0.85.1` build; semver compatibility alone is insufficient. Do not co-load the published and prerelease compactor copies in one Pi runtime.
 
 ## changelog
 

@@ -1,5 +1,10 @@
 # changelog
 
+## 0.1.9-astra.0 — 2026-09-10
+
+- added experimental Astra remote-context support for the exact patched Pi `0.85.1` host contract. This prerelease must not be installed on unpatched or future hosts.
+- fixed the patched host's compaction cut point when oversized trailing tool results must remain with their assistant tool-call turn.
+
 ## 0.1.8 — 2026-08-31
 
 - aligned ready-summary application with Pi `0.84`'s `agent_settled` lifecycle and added correlated handling for extension compaction failures.

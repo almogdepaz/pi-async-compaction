@@ -14,6 +14,8 @@ import { registerAsyncCompaction, type AsyncCompactionCoreDependencies } from ".
 import type { AsyncCompactionLifecycleEvent } from "../src/diagnostics";
 import { applyReadyCompaction, startAsyncJobWithDeps } from "../src/job";
 
+const astraExtensionPath = process.env.ASTRA_EXTENSION_PATH;
+
 function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
 	let resolvePromise: (() => void) | undefined;
 	const promise = new Promise<void>((resolve) => {
@@ -122,6 +124,7 @@ test(
 			noPromptTemplates: true,
 			noThemes: true,
 			noContextFiles: true,
+			additionalExtensionPaths: astraExtensionPath ? [astraExtensionPath] : [],
 			systemPrompt: "integration test",
 			appendSystemPrompt: [],
 			extensionFactories: [

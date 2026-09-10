@@ -31,6 +31,25 @@ describe("checkReleaseConsistency", () => {
 		})).toEqual([]);
 	});
 
+	test("accepts a tagged prerelease with matching release metadata", () => {
+		const prereleaseVersion = "0.1.9-astra.0";
+		expect(checkReleaseConsistency({
+			version: prereleaseVersion,
+			tagsAtHead: [`v${prereleaseVersion}`],
+			changelog: `# changelog\n\n## ${prereleaseVersion} — 2026-09-10\n`,
+			readme: `PI_CODING_AGENT_DIR=/tmp/astra node packages/coding-agent/dist/cli.js install git:github.com/almogdepaz/pi-async-compaction@v${prereleaseVersion}`,
+		})).toEqual([]);
+	});
+
+	test("rejects numeric prerelease identifiers with leading zeroes", () => {
+		expect(checkReleaseConsistency({
+			version: "1.2.3-01",
+			tagsAtHead: [],
+			changelog: "# changelog\n\n## 1.2.3-01 — unreleased\n",
+			readme: "pi install git:github.com/almogdepaz/pi-async-compaction@main",
+		})).toEqual(["package.json version must be an exact semantic version"]);
+	});
+
 	test("rejects tagged releases that retain unreleased installation metadata", () => {
 		expect(checkReleaseConsistency({
 			version,

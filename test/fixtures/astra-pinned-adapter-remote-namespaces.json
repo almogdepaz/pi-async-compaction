@@ -1,0 +1,398 @@
+[
+  {
+    "type": "namespace",
+    "name": "history",
+    "description": "Prior-window detail. Pass IDs unchanged. Search, never browse.",
+    "tools": [
+      {
+        "type": "function",
+        "name": "list_windows",
+        "description": "List context windows",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "agent_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "limit": {
+              "type": "integer"
+            },
+            "recent_first": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      {
+        "type": "function",
+        "name": "list_items",
+        "description": "List history items",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "agent_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "limit": {
+              "type": "integer"
+            },
+            "max_chars_per_item": {
+              "type": "integer"
+            },
+            "recent_first": {
+              "type": "boolean"
+            },
+            "role": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "user",
+                    "assistant",
+                    "tool",
+                    "system",
+                    "developer"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tool_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tool_namespace": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "window_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "type": "function",
+        "name": "read_item",
+        "description": "Read history item range",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "agent_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "item_id": {
+              "type": "string",
+              "description": "Suffix from the item's [id: …] marker."
+            },
+            "limit_chars": {
+              "type": "integer"
+            },
+            "offset_chars": {
+              "type": "integer"
+            },
+            "window_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "item_id",
+            "window_id"
+          ]
+        }
+      },
+      {
+        "type": "function",
+        "name": "search_contents",
+        "description": "Search history",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "agent_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "limit": {
+              "type": "integer"
+            },
+            "query": {
+              "type": "string",
+              "description": "Case-sensitive",
+              "encrypted": true
+            },
+            "recent_first": {
+              "type": "boolean"
+            },
+            "role": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "user",
+                    "assistant",
+                    "tool",
+                    "system",
+                    "developer"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tool_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tool_namespace": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "window_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "type": "namespace",
+    "name": "notes",
+    "description": "Cross-window checkpoints on virtual paths. Relative uses current agent; cross-agent uses <agent>/notes[/path].",
+    "tools": [
+      {
+        "type": "function",
+        "name": "list_files_by_prefix",
+        "description": "List note files",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_order": {
+              "type": "string",
+              "enum": [
+                "ascending",
+                "descending"
+              ]
+            },
+            "file_order_by": {
+              "type": "string",
+              "enum": [
+                "name",
+                "created_at",
+                "updated_at"
+              ]
+            },
+            "max_results": {
+              "type": "integer"
+            },
+            "prefix": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "type": "function",
+        "name": "read_file",
+        "description": "Read note file; line bounds inclusive, 1-based, negative from end",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "start_line": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stop_line": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "type": "function",
+        "name": "search_contents",
+        "description": "Search note lines by literal substring",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "max_files": {
+              "type": "integer"
+            },
+            "max_matches_per_file": {
+              "type": "integer"
+            },
+            "path_prefix": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "query": {
+              "type": "string",
+              "description": "Case-sensitive",
+              "encrypted": true
+            },
+            "recent_file_first": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      },
+      {
+        "type": "function",
+        "name": "append_to_file",
+        "description": "Append text exactly",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string",
+              "encrypted": true
+            }
+          },
+          "required": [
+            "text",
+            "path"
+          ]
+        }
+      },
+      {
+        "type": "function",
+        "name": "write_file",
+        "description": "Create or replace a note file",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string",
+              "encrypted": true
+            }
+          },
+          "required": [
+            "text",
+            "path"
+          ]
+        }
+      }
+    ]
+  }
+]

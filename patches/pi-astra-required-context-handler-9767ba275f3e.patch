@@ -1,0 +1,4238 @@
+diff --git a/packages/ai/src/api/openai-codex-responses.ts b/packages/ai/src/api/openai-codex-responses.ts
+index d7e3749f5831cc8a05a98fb7a7670ba697f9ecc6..dcd29a99d99cbc77605169f647ef022f564f26d0 100644
+--- a/packages/ai/src/api/openai-codex-responses.ts
++++ b/packages/ai/src/api/openai-codex-responses.ts
+@@ -70,6 +70,8 @@ const CODEX_RESPONSE_STATUSES = new Set<CodexResponseStatus>([
+ // ============================================================================
+ 
+ export interface OpenAICodexResponsesOptions extends StreamOptions {
++	/** Called before each transport attempt and after WebSocket acquisition, immediately before response.create. */
++	beforeTransportAttempt?: (headers: Headers) => void | Promise<void>;
+ 	reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+ 	reasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on" | null;
+ 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
+@@ -296,6 +298,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
+ 				let retriedMissingWebSocketContinuation = false;
+ 				while (true) {
+ 					websocketStarted = false;
++					// Required-context failures must not be retried or downgraded as transport failures.
++					await options?.beforeTransportAttempt?.(websocketHeaders);
+ 					try {
+ 						await processWebSocketStream(
+ 							resolveCodexWebSocketUrl(model.baseUrl),
+@@ -384,6 +388,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
+ 					throw new Error("Request was aborted");
+ 				}
+ 
++				await options?.beforeTransportAttempt?.(sseHeaders);
+ 				try {
+ 					const headerTimeoutSignal =
+ 						httpTimeoutMs !== undefined && httpTimeoutMs > 0 ? AbortSignal.timeout(httpTimeoutMs) : undefined;
+@@ -492,7 +497,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
+ export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStreamOptions> = (
+ 	model: Model<"openai-codex-responses">,
+ 	context: Context,
+-	options?: SimpleStreamOptions,
++	options?: SimpleStreamOptions & Pick<OpenAICodexResponsesOptions, "beforeTransportAttempt">,
+ ): AssistantMessageEventStream => {
+ 	const apiKey = options?.apiKey;
+ 	if (!apiKey) {
+@@ -502,6 +507,7 @@ export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStream
+ 	const base = {
+ 		...buildBaseOptions(model, context, options, apiKey),
+ 		toolChoice: options?.toolChoice,
++		beforeTransportAttempt: options?.beforeTransportAttempt,
+ 	} satisfies OpenAICodexResponsesOptions;
+ 	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
+ 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
+@@ -678,6 +684,13 @@ class CodexApiError extends Error {
+ 	}
+ }
+ 
++class TransportAttemptValidationError extends Error {
++	constructor(cause: unknown) {
++		super(cause instanceof Error ? cause.message : String(cause), { cause });
++		this.name = "TransportAttemptValidationError";
++	}
++}
++
+ class CodexProtocolError extends Error {
+ 	readonly payload?: unknown;
+ 
+@@ -690,7 +703,11 @@ class CodexProtocolError extends Error {
+ }
+ 
+ function isCodexNonTransportError(error: unknown): boolean {
+-	return error instanceof CodexApiError || error instanceof CodexProtocolError;
++	return (
++		error instanceof CodexApiError ||
++		error instanceof CodexProtocolError ||
++		error instanceof TransportAttemptValidationError
++	);
+ }
+ 
+ function isWebSocketConnectionLimitReachedError(error: unknown): boolean {
+@@ -850,6 +867,7 @@ interface CachedWebSocketContinuationState {
+ 
+ interface CachedWebSocketConnection {
+ 	socket: WebSocketLike;
++	authorization: string | null;
+ 	busy: boolean;
+ 	createdAt: number;
+ 	idleTimer?: ReturnType<typeof setTimeout>;
+@@ -1121,12 +1139,14 @@ async function acquireWebSocket(
+ 	headers: Headers,
+ 	sessionId: string | undefined,
+ 	accountId: string,
++	authorization: string | null,
+ 	signal?: AbortSignal,
+ 	connectTimeoutMs?: number,
+ 	env?: ProviderEnv,
+ ): Promise<{
+ 	socket: WebSocketLike;
+ 	entry?: CachedWebSocketConnection;
++	authorization: string | null;
+ 	reused: boolean;
+ 	release: (options?: { keep?: boolean }) => void;
+ }> {
+@@ -1134,6 +1154,7 @@ async function acquireWebSocket(
+ 		const socket = await connectWebSocket(url, headers, signal, connectTimeoutMs, env);
+ 		return {
+ 			socket,
++			authorization,
+ 			reused: false,
+ 			release: () => closeWebSocketSilently(socket),
+ 		};
+@@ -1146,8 +1167,19 @@ async function acquireWebSocket(
+ 			clearTimeout(cached.idleTimer);
+ 			cached.idleTimer = undefined;
+ 		}
+-		if (!cached.busy && isWebSocketSessionExpired(cached)) {
+-			closeWebSocketSilently(cached.socket, 1000, "connection_age_limit");
++		if (
++			!cached.busy &&
++			(cached.authorization !== authorization ||
++				isWebSocketSessionExpired(cached) ||
++				!isWebSocketReusable(cached.socket))
++		) {
++			if (cached.authorization !== authorization) {
++				closeWebSocketSilently(cached.socket, 1000, "authorization_changed");
++			} else if (isWebSocketSessionExpired(cached)) {
++				closeWebSocketSilently(cached.socket, 1000, "connection_age_limit");
++			} else {
++				closeWebSocketSilently(cached.socket);
++			}
+ 			accountEntries?.delete(accountId);
+ 			if (accountEntries?.size === 0) websocketSessionCache.delete(sessionId);
+ 		} else if (!cached.busy && isWebSocketReusable(cached.socket)) {
+@@ -1155,6 +1187,7 @@ async function acquireWebSocket(
+ 			return {
+ 				socket: cached.socket,
+ 				entry: cached,
++				authorization: cached.authorization,
+ 				reused: true,
+ 				release: ({ keep } = {}) => {
+ 					if (!keep || !isWebSocketReusable(cached.socket)) {
+@@ -1173,21 +1206,17 @@ async function acquireWebSocket(
+ 			const socket = await connectWebSocket(url, headers, signal, connectTimeoutMs, env);
+ 			return {
+ 				socket,
++				authorization,
+ 				reused: false,
+ 				release: () => {
+ 					closeWebSocketSilently(socket);
+ 				},
+ 			};
+ 		}
+-		if (!isWebSocketReusable(cached.socket)) {
+-			closeWebSocketSilently(cached.socket);
+-			accountEntries?.delete(accountId);
+-			if (accountEntries?.size === 0) websocketSessionCache.delete(sessionId);
+-		}
+ 	}
+ 
+ 	const socket = await connectWebSocket(url, headers, signal, connectTimeoutMs, env);
+-	const entry: CachedWebSocketConnection = { socket, busy: true, createdAt: Date.now() };
++	const entry: CachedWebSocketConnection = { socket, authorization, busy: true, createdAt: Date.now() };
+ 	accountEntries = websocketSessionCache.get(sessionId);
+ 	if (!accountEntries) {
+ 		accountEntries = new Map();
+@@ -1197,9 +1226,14 @@ async function acquireWebSocket(
+ 	return {
+ 		socket,
+ 		entry,
++		authorization,
+ 		reused: false,
+ 		release: ({ keep } = {}) => {
+-			if (!keep || !isWebSocketReusable(entry.socket)) {
++			if (
++				!keep ||
++				!isWebSocketReusable(entry.socket) ||
++				websocketSessionCache.get(sessionId)?.get(accountId) !== entry
++			) {
+ 				closeWebSocketSilently(entry.socket);
+ 				if (entry.idleTimer) clearTimeout(entry.idleTimer);
+ 				const currentEntries = websocketSessionCache.get(sessionId);
+@@ -1471,15 +1505,51 @@ async function processWebSocketStream(
+ 	grammarToolInputProperties: ReadonlyMap<string, string>,
+ 	options?: OpenAICodexResponsesOptions,
+ ): Promise<void> {
+-	const { socket, entry, reused, release } = await acquireWebSocket(
++	let acquisition = await acquireWebSocket(
+ 		url,
+ 		headers,
+ 		cacheSessionId,
+ 		accountId,
++		headers.get("authorization"),
+ 		options?.signal,
+ 		websocketConnectTimeoutMs,
+ 		options?.env,
+ 	);
++	let released = false;
++	const releaseAcquisition = (keep: boolean): void => {
++		if (released) return;
++		released = true;
++		acquisition.release({ keep });
++	};
++	let reacquiredForAuthorization = false;
++	while (true) {
++		try {
++			if (options?.signal?.aborted) throw new Error("Request was aborted");
++			await options?.beforeTransportAttempt?.(headers);
++			if (options?.signal?.aborted) throw new Error("Request was aborted");
++		} catch (error) {
++			releaseAcquisition(false);
++			throw new TransportAttemptValidationError(error);
++		}
++		if (headers.get("authorization") === acquisition.authorization) break;
++		releaseAcquisition(false);
++		if (reacquiredForAuthorization) {
++			throw new TransportAttemptValidationError(new Error("WebSocket authorization changed during acquisition"));
++		}
++		reacquiredForAuthorization = true;
++		acquisition = await acquireWebSocket(
++			url,
++			headers,
++			cacheSessionId,
++			accountId,
++			headers.get("authorization"),
++			options?.signal,
++			websocketConnectTimeoutMs,
++			options?.env,
++		);
++		released = false;
++	}
++	const { socket, entry, reused } = acquisition;
+ 	let keepConnection = true;
+ 	const useCachedContext = options?.transport === "websocket-cached" || options?.transport === "auto";
+ 	// ChatGPT Codex Responses rejects `store: true` ("Store must be set to false").
+@@ -1541,7 +1611,7 @@ async function processWebSocketStream(
+ 		keepConnection = false;
+ 		throw error;
+ 	} finally {
+-		release({ keep: keepConnection });
++		releaseAcquisition(keepConnection);
+ 	}
+ }
+ 
+@@ -1599,6 +1669,12 @@ function buildBaseCodexHeaders(
+ 	accountId: string,
+ 	token: string,
+ ): Headers {
++	const configuredAccountId = Object.entries(additionalHeaders ?? {}).find(
++		([name]) => name.toLowerCase() === "chatgpt-account-id",
++	)?.[1];
++	if (configuredAccountId !== undefined && configuredAccountId !== null && configuredAccountId !== accountId) {
++		throw new Error("Configured chatgpt-account-id conflicts with authenticated token");
++	}
+ 	const headers = new Headers(initHeaders);
+ 	for (const [key, value] of Object.entries(additionalHeaders || {})) {
+ 		if (value === null) {
+diff --git a/packages/ai/src/auth/oauth/openai-codex.ts b/packages/ai/src/auth/oauth/openai-codex.ts
+index 96e861a949a9b2450604492069bafb2895fe4001..c3a11a94c67a1ad2efc907c415ea01cdd6fa0b53 100644
+--- a/packages/ai/src/auth/oauth/openai-codex.ts
++++ b/packages/ai/src/auth/oauth/openai-codex.ts
+@@ -539,6 +539,20 @@ export const openaiCodexOAuth: OAuthAuth = {
+ 	refresh: (credential, signal) => refreshOpenAICodexToken(credential.refresh, signal),
+ 
+ 	async toAuth(credential) {
+-		return { apiKey: credential.access };
++		const tokenAccountId = getAccountId(credential.access);
++		if (!tokenAccountId) {
++			throw new Error("Failed to extract accountId from token");
++		}
++		if (
++			typeof credential.accountId === "string" &&
++			credential.accountId.length > 0 &&
++			credential.accountId !== tokenAccountId
++		) {
++			throw new Error("Stored Codex account metadata does not match authenticated token");
++		}
++		return {
++			apiKey: credential.access,
++			headers: { "chatgpt-account-id": tokenAccountId },
++		};
+ 	},
+ };
+diff --git a/packages/ai/test/oauth-auth.test.ts b/packages/ai/test/oauth-auth.test.ts
+index ceaac57f971f3c019feeb8ee59020b08396b9818..ec9bad8002c43323b558918e1e17a0ede4b15468 100644
+--- a/packages/ai/test/oauth-auth.test.ts
++++ b/packages/ai/test/oauth-auth.test.ts
+@@ -12,6 +12,9 @@ import { anthropicProvider } from "../src/providers/anthropic.ts";
+ import { githubCopilotProvider } from "../src/providers/github-copilot.ts";
+ 
+ const neverAbortedSignal = new AbortController().signal;
++const CODEX_ACCOUNT_ID = "test-codex-account";
++const CODEX_ACCESS_TOKEN =
++	"offline.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoidGVzdC1jb2RleC1hY2NvdW50In19.signature";
+ 
+ function jsonResponse(body: unknown, status = 200): Response {
+ 	return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+@@ -39,9 +42,14 @@ describe.sequential("OAuthAuth adapters", () => {
+ 		expect(auth).toEqual({ apiKey: "token" });
+ 	});
+ 
+-	it("openai-codex toAuth derives the api key from the access token", async () => {
+-		const auth = await openaiCodexOAuth.toAuth({ type: "oauth", access: "token", refresh: "r", expires: 0 });
+-		expect(auth).toEqual({ apiKey: "token" });
++	it("openai-codex toAuth derives the api key and authoritative account header from the access token", async () => {
++		const auth = await openaiCodexOAuth.toAuth({
++			type: "oauth",
++			access: CODEX_ACCESS_TOKEN,
++			refresh: "r",
++			expires: 0,
++		});
++		expect(auth).toEqual({ apiKey: CODEX_ACCESS_TOKEN, headers: { "chatgpt-account-id": CODEX_ACCOUNT_ID } });
+ 	});
+ 
+ 	it("openrouter derives the api key and keeps the permanent credential on refresh", async () => {
+diff --git a/packages/ai/test/openai-codex-oauth.test.ts b/packages/ai/test/openai-codex-oauth.test.ts
+index f45d4aeea5e804fba2abf926f141c1519d3429d3..a0475292619f93d14445201f8e1f6d4ee62f96a9 100644
+--- a/packages/ai/test/openai-codex-oauth.test.ts
++++ b/packages/ai/test/openai-codex-oauth.test.ts
+@@ -453,6 +453,73 @@ describe("OpenAI Codex OAuth", () => {
+ 		);
+ 	});
+ 
++	it("exposes the validated non-secret account id through request auth", async () => {
++		await expect(
++			openaiCodexOAuth.toAuth({
++				type: "oauth",
++				access: createAccessToken("account-auth-header"),
++				refresh: "refresh-token",
++				expires: Date.now() + 60_000,
++				accountId: "account-auth-header",
++			}),
++		).resolves.toEqual({
++			apiKey: createAccessToken("account-auth-header"),
++			headers: { "chatgpt-account-id": "account-auth-header" },
++		});
++	});
++
++	it("rejects stored Codex account metadata that disagrees with the bearer", async () => {
++		await expect(
++			openaiCodexOAuth.toAuth({
++				type: "oauth",
++				access: createAccessToken("account-from-token"),
++				refresh: "refresh-token",
++				expires: Date.now() + 60_000,
++				accountId: "stored-different-account",
++			}),
++		).rejects.toThrow("does not match authenticated token");
++	});
++
++	it("derives request account metadata for legacy Codex credentials", async () => {
++		await expect(
++			openaiCodexOAuth.toAuth({
++				type: "oauth",
++				access: createAccessToken("legacy-account"),
++				refresh: "refresh-token",
++				expires: Date.now() + 60_000,
++			}),
++		).resolves.toMatchObject({ headers: { "chatgpt-account-id": "legacy-account" } });
++	});
++
++	it("keeps the account metadata across a same-account token refresh", async () => {
++		const refreshedAccess = createAccessToken("account-refresh");
++		vi.stubGlobal(
++			"fetch",
++			vi.fn(async (input: unknown): Promise<Response> => {
++				expect(getUrl(input)).toBe("https://auth.openai.com/oauth/token");
++				return jsonResponse({
++					access_token: refreshedAccess,
++					refresh_token: "refreshed-token",
++					expires_in: 3600,
++				});
++			}),
++		);
++		const credential = await openaiCodexOAuth.refresh(
++			{
++				type: "oauth",
++				access: createAccessToken("account-refresh"),
++				refresh: "old-refresh-token",
++				expires: 0,
++				accountId: "account-refresh",
++			},
++			neverAbortedSignal,
++		);
++		expect(credential).toMatchObject({ accountId: "account-refresh", access: refreshedAccess });
++		await expect(openaiCodexOAuth.toAuth(credential)).resolves.toMatchObject({
++			headers: { "chatgpt-account-id": "account-refresh" },
++		});
++	});
++
+ 	it("does not write token refresh failures to stderr", async () => {
+ 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+ 		vi.stubGlobal(
+diff --git a/packages/ai/test/openai-codex-stream.test.ts b/packages/ai/test/openai-codex-stream.test.ts
+index 67294882552bc245530fd12e179f6c2e1b87bcba..9bc60384001709739cb45ffc930918b611020455 100644
+--- a/packages/ai/test/openai-codex-stream.test.ts
++++ b/packages/ai/test/openai-codex-stream.test.ts
+@@ -209,6 +209,38 @@ describe("openai-codex streaming", () => {
+ 		expect(sawDone).toBe(true);
+ 	});
+ 
++	it("rejects a configured account header that conflicts with the authenticated Codex token", async () => {
++		const model: Model<"openai-codex-responses"> = {
++			id: "gpt-5.1-codex",
++			name: "GPT-5.1 Codex",
++			api: "openai-codex-responses",
++			provider: "openai-codex",
++			baseUrl: "https://chatgpt.com/backend-api",
++			reasoning: true,
++			input: ["text"],
++			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
++			contextWindow: 400000,
++			maxTokens: 128000,
++		};
++		const fetchMock = vi.fn();
++		const result = await streamOpenAICodexResponses(
++			model,
++			{
++				systemPrompt: "test",
++				messages: [{ role: "user", content: "test", timestamp: Date.now() }],
++			},
++			{
++				apiKey: mockToken("authenticated-account"),
++				headers: { "chatgpt-account-id": "configured-account" },
++				transport: "sse",
++				fetch: fetchMock,
++			},
++		).result();
++		expect(result.stopReason).toBe("error");
++		expect(result.errorMessage).toContain("conflicts with authenticated token");
++		expect(fetchMock).not.toHaveBeenCalled();
++	});
++
+ 	// Regression test for https://github.com/earendil-works/pi/issues/9047
+ 	it("processes a terminal SSE event without a trailing blank line", async () => {
+ 		const token = mockToken();
+@@ -1374,6 +1406,7 @@ describe("openai-codex streaming", () => {
+ 
+ 	it("scopes cached websockets to the authenticated account", async () => {
+ 		// Regression for #7284: rotating accounts must not reuse a socket authenticated by another account.
++		vi.useFakeTimers();
+ 		const connectedHeaders: Record<string, string>[] = [];
+ 		let responseId = 0;
+ 
+@@ -1446,18 +1479,158 @@ describe("openai-codex streaming", () => {
+ 		};
+ 		const context: Context = { systemPrompt: "", messages: [] };
+ 		const options = { sessionId: "shared-session", transport: "websocket-cached" as const };
++		const accountAToken = mockToken("account-a");
++		const refreshedAccountAToken = `${accountAToken}refreshed`;
+ 
+-		await streamOpenAICodexResponses(model, context, { ...options, apiKey: mockToken("account-a") }).result();
++		await streamOpenAICodexResponses(model, context, { ...options, apiKey: accountAToken }).result();
+ 		await streamOpenAICodexResponses(model, context, { ...options, apiKey: mockToken("account-b") }).result();
+-		await streamOpenAICodexResponses(model, context, { ...options, apiKey: mockToken("account-a") }).result();
++		await streamOpenAICodexResponses(model, context, { ...options, apiKey: accountAToken }).result();
++		await streamOpenAICodexResponses(model, context, { ...options, apiKey: refreshedAccountAToken }).result();
+ 
+-		expect(connectedHeaders.map((headers) => headers["chatgpt-account-id"])).toEqual(["account-a", "account-b"]);
++		expect(connectedHeaders.map((headers) => headers["chatgpt-account-id"])).toEqual([
++			"account-a",
++			"account-b",
++			"account-a",
++		]);
+ 		expect(connectedHeaders.map((headers) => headers.authorization)).toEqual([
+-			`Bearer ${mockToken("account-a")}`,
++			`Bearer ${accountAToken}`,
+ 			`Bearer ${mockToken("account-b")}`,
++			`Bearer ${refreshedAccountAToken}`,
+ 		]);
+ 		expect(global.fetch).not.toHaveBeenCalled();
+ 		expect(getOpenAICodexWebSocketDebugStats("shared-session")).toMatchObject({
++			connectionsCreated: 3,
++			connectionsReused: 1,
++		});
++		expect(vi.getTimerCount()).toBe(2);
++	});
++
++	it("keeps a busy cached socket authoritative across a same-account bearer refresh", async () => {
++		const connectedHeaders: Record<string, string>[] = [];
++		let responseId = 0;
++		let firstResponseReleased = false;
++		let releaseFirstResponse: (() => void) | undefined;
++		let markFirstSent: (() => void) | undefined;
++		const firstSent = new Promise<void>((resolve) => {
++			markFirstSent = resolve;
++		});
++
++		class MockWebSocket {
++			static OPEN = 1;
++			readyState = MockWebSocket.OPEN;
++			private listeners = new Map<string, Set<(event: unknown) => void>>();
++			private readonly connectionIndex: number;
++
++			constructor(_url: string, protocols?: string | string[] | { headers?: Record<string, string> }) {
++				const headers =
++					protocols && typeof protocols === "object" && !Array.isArray(protocols) ? protocols.headers : undefined;
++				connectedHeaders.push(headers ?? {});
++				this.connectionIndex = connectedHeaders.length - 1;
++				queueMicrotask(() => this.dispatch("open", {}));
++			}
++
++			addEventListener(type: string, listener: (event: unknown) => void): void {
++				let listeners = this.listeners.get(type);
++				if (!listeners) {
++					listeners = new Set();
++					this.listeners.set(type, listeners);
++				}
++				listeners.add(listener);
++			}
++
++			removeEventListener(type: string, listener: (event: unknown) => void): void {
++				this.listeners.get(type)?.delete(listener);
++			}
++
++			send(): void {
++				const complete = () => {
++					queueMicrotask(() =>
++						this.dispatch("message", {
++							data: JSON.stringify({
++								type: "response.completed",
++								response: {
++									id: `resp_${++responseId}`,
++									status: "completed",
++									usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
++								},
++							}),
++						}),
++					);
++				};
++				if (this.connectionIndex !== 0 || firstResponseReleased) {
++					complete();
++					return;
++				}
++				markFirstSent?.();
++				releaseFirstResponse = () => {
++					firstResponseReleased = true;
++					complete();
++				};
++			}
++
++			close(): void {
++				this.readyState = 3;
++			}
++
++			private dispatch(type: string, event: unknown): void {
++				for (const listener of this.listeners.get(type) ?? []) listener(event);
++			}
++		}
++
++		vi.stubGlobal("WebSocket", MockWebSocket);
++		vi.stubGlobal(
++			"fetch",
++			vi.fn(async () => new Response("unexpected fetch", { status: 500 })),
++		);
++		const model: Model<"openai-codex-responses"> = {
++			id: "gpt-5.1-codex",
++			name: "GPT-5.1 Codex",
++			api: "openai-codex-responses",
++			provider: "openai-codex",
++			baseUrl: "https://chatgpt.com/backend-api",
++			reasoning: true,
++			input: ["text"],
++			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
++			contextWindow: 400000,
++			maxTokens: 128000,
++		};
++		const options = { sessionId: "same-account-concurrent-refresh", transport: "websocket-cached" as const };
++		const initialToken = mockToken("account-a");
++		const refreshedToken = `${initialToken}refreshed`;
++		const first = streamOpenAICodexResponses(
++			model,
++			{ systemPrompt: "", messages: [] },
++			{
++				...options,
++				apiKey: initialToken,
++			},
++		).result();
++		await firstSent;
++		await streamOpenAICodexResponses(
++			model,
++			{ systemPrompt: "", messages: [] },
++			{
++				...options,
++				apiKey: refreshedToken,
++			},
++		).result();
++		releaseFirstResponse?.();
++		await first;
++		await streamOpenAICodexResponses(
++			model,
++			{ systemPrompt: "", messages: [] },
++			{
++				...options,
++				apiKey: initialToken,
++			},
++		).result();
++
++		expect(connectedHeaders).toHaveLength(2);
++		expect(connectedHeaders.map((headers) => headers.authorization)).toEqual([
++			`Bearer ${initialToken}`,
++			`Bearer ${refreshedToken}`,
++		]);
++		expect(getOpenAICodexWebSocketDebugStats("same-account-concurrent-refresh")).toMatchObject({
+ 			connectionsCreated: 2,
+ 			connectionsReused: 1,
+ 		});
+diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
+index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89f13b2d4e 100644
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -65,6 +65,7 @@ import {
+ 	prepareCompaction,
+ 	shouldCompact,
+ } from "./compaction/index.ts";
++import { getRequiredContextHandler } from "./context-handler-requirement.ts";
+ import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
+ import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
+ import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
+@@ -367,6 +368,7 @@ export class AgentSession {
+ 	private _extensionShutdownHandler?: ShutdownHandler;
+ 	private _extensionErrorListener?: ExtensionErrorListener;
+ 	private _extensionErrorUnsubscriber?: () => void;
++	private readonly _nativeExtensionProviderCleanups = new Set<() => void>();
+ 
+ 	private _modelRuntime: ModelRuntime;
+ 
+@@ -874,6 +876,13 @@ export class AgentSession {
+ 		}
+ 	}
+ 
++	private _cleanupNativeExtensionProviders(): void {
++		const cleanups = [...this._nativeExtensionProviderCleanups];
++		this._nativeExtensionProviderCleanups.clear();
++		for (const cleanup of cleanups) cleanup();
++		this._refreshCurrentModelFromRegistry();
++	}
++
+ 	/**
+ 	 * Remove all listeners and disconnect from agent.
+ 	 * Call this when completely done with the session.
+@@ -889,6 +898,9 @@ export class AgentSession {
+ 			// Dispose must succeed even if an abort hook throws.
+ 		}
+ 
++		// dispose() is synchronous, so clean up only registrations owned by this
++		// session. Async session_shutdown handlers remain awaited by their lifecycle owners.
++		this._cleanupNativeExtensionProviders();
+ 		this._extensionRunner.invalidate(
+ 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+ 		);
+@@ -931,6 +943,23 @@ export class AgentSession {
+ 		return this.agent.state.systemPrompt;
+ 	}
+ 
++	/**
++	 * Fail closed after extension transforms have run and before provider dispatch.
++	 * Legacy sessions have no requirement and retain existing behavior.
++	 */
++	assertRequiredContextHandler(): void {
++		const requirement = getRequiredContextHandler(this.sessionManager.getEntries());
++		if (!requirement) {
++			this._extensionRunner.assertModelContextHandlers(this.model);
++			return;
++		}
++		if (!this._extensionRunner.assertContextHandler(requirement.handler, requirement.version)) {
++			throw new Error(
++				`Required context handler "${requirement.handler}" version ${requirement.version} is not active`,
++			);
++		}
++	}
++
+ 	/** Current retry attempt (0 if not retrying) */
+ 	get retryAttempt(): number {
+ 		return this._retryAttempt;
+@@ -1105,8 +1134,10 @@ export class AgentSession {
+ 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+ 		this._isAgentRunActive = true;
+ 		try {
++			this.assertRequiredContextHandler();
+ 			await this.agent.prompt(messages);
+ 			while (await this._handlePostAgentRun()) {
++				this.assertRequiredContextHandler();
+ 				await this.agent.continue();
+ 			}
+ 		} finally {
+@@ -1649,6 +1680,42 @@ export class AgentSession {
+ 		});
+ 	}
+ 
++	private _commitModelSelection(model: Model<any>, thinkingLevel: ThinkingLevel, options: ModelMutationOptions): void {
++		this.sessionManager.appendModelChange(model.provider, model.id);
++		if (options.persist) {
++			this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
++			this._addPersistedDefaultToNonEmptyScope(model);
++		}
++
++		// Apply thinking level for the new model.
++		// Per-model thinking level overrides take priority over the global default.
++		// Model persistence does not implicitly rewrite the global thinking default.
++		this.setThinkingLevel(thinkingLevel);
++	}
++
++	private async _selectModel(
++		model: Model<any>,
++		previousModel: Model<any>,
++		thinkingLevel: ThinkingLevel,
++		options: ModelMutationOptions,
++		source: "set" | "cycle",
++	): Promise<void> {
++		this.agent.state.model = model;
++		if (!this._extensionRunner.hasModelContextHandlers(model)) {
++			this._commitModelSelection(model, thinkingLevel, options);
++			await this._emitModelSelect(model, previousModel, source);
++			return;
++		}
++		try {
++			await this._emitModelSelect(model, previousModel, source);
++			this._extensionRunner.assertModelContextHandlers(model);
++		} catch (error) {
++			this.agent.state.model = previousModel;
++			throw error;
++		}
++		this._commitModelSelection(model, thinkingLevel, options);
++	}
++
+ 	/**
+ 	 * Set model directly.
+ 	 * Validates that auth is configured and saves to the session transcript.
+@@ -1660,21 +1727,9 @@ export class AgentSession {
+ 			throw new Error(`No API key for ${model.provider}/${model.id}`);
+ 		}
+ 
+-		const previousModel = this.model;
++		const previousModel = this.agent.state.model;
+ 		const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
+-		this.agent.state.model = model;
+-		this.sessionManager.appendModelChange(model.provider, model.id);
+-		if (options.persist) {
+-			this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+-			this._addPersistedDefaultToNonEmptyScope(model);
+-		}
+-
+-		// Apply thinking level for the new model.
+-		// Per-model thinking level overrides take priority over the global default.
+-		// Model persistence does not implicitly rewrite the global thinking default.
+-		this.setThinkingLevel(thinkingLevel);
+-
+-		await this._emitModelSelect(model, previousModel, "set");
++		await this._selectModel(model, previousModel, thinkingLevel, options, "set");
+ 	}
+ 
+ 	private _addPersistedDefaultToNonEmptyScope(model: Model<any>): void {
+@@ -1728,22 +1783,7 @@ export class AgentSession {
+ 		const next = scopedModels[nextIndex];
+ 		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.model, next.thinkingLevel);
+ 
+-		// Apply model
+-		this.agent.state.model = next.model;
+-		this.sessionManager.appendModelChange(next.model.provider, next.model.id);
+-		if (options.persist) {
+-			this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
+-			this._addPersistedDefaultToNonEmptyScope(next.model);
+-		}
+-
+-		// Apply thinking level for the new model.
+-		// - Explicit scoped model thinking level overrides defaults
+-		// - Per-model thinking level overrides take priority over the global default
+-		// setThinkingLevel clamps to model capabilities.
+-		// Model persistence does not implicitly rewrite the global thinking default.
+-		this.setThinkingLevel(thinkingLevel);
+-
+-		await this._emitModelSelect(next.model, currentModel, "cycle");
++		await this._selectModel(next.model, this.agent.state.model, thinkingLevel, options, "cycle");
+ 
+ 		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
+ 	}
+@@ -1764,18 +1804,7 @@ export class AgentSession {
+ 		const nextModel = availableModels[nextIndex];
+ 
+ 		const thinkingLevel = this._getThinkingLevelForModelSwitch(nextModel);
+-		this.agent.state.model = nextModel;
+-		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
+-		if (options.persist) {
+-			this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
+-			this._addPersistedDefaultToNonEmptyScope(nextModel);
+-		}
+-
+-		// Apply thinking level for the new model.
+-		// Model persistence does not implicitly rewrite the global thinking default.
+-		this.setThinkingLevel(thinkingLevel);
+-
+-		await this._emitModelSelect(nextModel, currentModel, "cycle");
++		await this._selectModel(nextModel, this.agent.state.model, thinkingLevel, options, "cycle");
+ 
+ 		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: false };
+ 	}
+@@ -1944,6 +1973,7 @@ export class AgentSession {
+ 	 * @param customInstructions Optional instructions for the compaction summary
+ 	 */
+ 	async compact(customInstructions?: string): Promise<CompactionResult> {
++		this.assertRequiredContextHandler();
+ 		await this.abort();
+ 		this._compactionAbortController = new AbortController();
+ 		this._emit({ type: "compaction_start", reason: "manual" });
+@@ -1969,6 +1999,10 @@ export class AgentSession {
+ 				throw new Error("Nothing to compact (session too small)");
+ 			}
+ 
++			const preparedBoundary = {
++				firstKeptEntryId: preparation.firstKeptEntryId,
++				tokensBefore: preparation.tokensBefore,
++			};
+ 			let extensionCompaction: CompactionResult | undefined;
+ 
+ 			if (this._extensionRunner.hasHandlers("session_before_compact")) {
+@@ -2028,6 +2062,8 @@ export class AgentSession {
+ 				throw new Error("Compaction cancelled");
+ 			}
+ 
++			if (extensionCompaction)
++				this._extensionRunner.assertRequiredContextCompaction(extensionCompaction, preparedBoundary);
+ 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+ 			const newEntries = this.sessionManager.getEntries();
+ 			const sessionContext = this.sessionManager.buildSessionContext();
+@@ -2246,6 +2282,7 @@ export class AgentSession {
+ 	 * @returns Whether the post-run loop should call `agent.continue()`
+ 	 */
+ 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
++		this.assertRequiredContextHandler();
+ 		const settings = this.settingsManager.getCompactionSettings();
+ 		let started = false;
+ 		let fromExtension = false;
+@@ -2268,6 +2305,10 @@ export class AgentSession {
+ 			this._autoCompactionAbortController = new AbortController();
+ 			started = true;
+ 
++			const preparedBoundary = {
++				firstKeptEntryId: preparation.firstKeptEntryId,
++				tokensBefore: preparation.tokensBefore,
++			};
+ 			let extensionCompaction: CompactionResult | undefined;
+ 
+ 			if (this._extensionRunner.hasHandlers("session_before_compact")) {
+@@ -2353,6 +2394,8 @@ export class AgentSession {
+ 				return false;
+ 			}
+ 
++			if (extensionCompaction)
++				this._extensionRunner.assertRequiredContextCompaction(extensionCompaction, preparedBoundary);
+ 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+ 			const newEntries = this.sessionManager.getEntries();
+ 			const sessionContext = this.sessionManager.buildSessionContext();
+@@ -2464,6 +2507,7 @@ export class AgentSession {
+ 
+ 		this._applyExtensionBindings(this._extensionRunner);
+ 		await this._extensionRunner.emit(this._sessionStartEvent);
++		this._extensionRunner.assertModelContextHandlers(this.model);
+ 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
+ 	}
+ 
+@@ -2608,6 +2652,7 @@ export class AgentSession {
+ 				},
+ 				getActiveTools: () => this.getActiveToolNames(),
+ 				getAllTools: () => this.getAllTools(),
++				getToolDefinition: (name) => this.getToolDefinition(name),
+ 				setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
+ 				refreshTools: () => this._refreshToolRegistry(),
+ 				getCommands,
+@@ -2657,7 +2702,7 @@ export class AgentSession {
+ 					this._refreshCurrentModelFromRegistry();
+ 				},
+ 				registerNativeProvider: (provider) => {
+-					this._modelRuntime.registerNativeProvider(provider);
++					this._nativeExtensionProviderCleanups.add(this._modelRuntime.registerNativeProvider(provider));
+ 					this._refreshCurrentModelFromRegistry();
+ 				},
+ 				unregisterProvider: (name) => {
+@@ -2819,6 +2864,7 @@ export class AgentSession {
+ 		const oldRunner = this._extensionRunner;
+ 		const previousFlagValues = oldRunner.getFlagValues();
+ 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
++		this._cleanupNativeExtensionProviders();
+ 		oldRunner.invalidate();
+ 		await this.settingsManager.reload();
+ 		this.syncQueueModesFromSettings();
+diff --git a/packages/coding-agent/src/core/compaction/compaction.ts b/packages/coding-agent/src/core/compaction/compaction.ts
+index 6ced927cab8ece071e022a35e22dd7e6fa160f05..e63825268ccea4051df14eb082147c35d9458759 100644
+--- a/packages/coding-agent/src/core/compaction/compaction.ts
++++ b/packages/coding-agent/src/core/compaction/compaction.ts
+@@ -427,12 +427,14 @@ export function findCutPoint(
+ 
+ 		// Check if we've exceeded the budget
+ 		if (accumulatedTokens >= keepRecentTokens) {
+-			// Find the closest valid cut point at or after this entry
+-			for (let c = 0; c < cutPoints.length; c++) {
+-				if (cutPoints[c] >= i) {
+-					cutIndex = cutPoints[c];
++			// Find the closest valid cut point at or after this entry. If trailing tool
++			// results alone exceed the budget, keep their preceding assistant call too.
++			for (const candidate of cutPoints) {
++				if (candidate >= i) {
++					cutIndex = candidate;
+ 					break;
+ 				}
++				cutIndex = candidate;
+ 			}
+ 			break;
+ 		}
+diff --git a/packages/coding-agent/src/core/extensions/index.ts b/packages/coding-agent/src/core/extensions/index.ts
+index f19816a9a634d6dcc385500d88ea3514bb06d93c..40637d10d7fe066a58d1014f8bf71f263f6b9d6d 100644
+--- a/packages/coding-agent/src/core/extensions/index.ts
++++ b/packages/coding-agent/src/core/extensions/index.ts
+@@ -46,6 +46,7 @@ export type {
+ 	ContextEvent,
+ 	// Event Results
+ 	ContextEventResult,
++	ContextHandlerRegistration,
+ 	ContextUsage,
+ 	CustomToolCallEvent,
+ 	CustomToolResultEvent,
+diff --git a/packages/coding-agent/src/core/extensions/loader.ts b/packages/coding-agent/src/core/extensions/loader.ts
+index 32ca6c9528658db16b767de13043914aa59d35f4..c66824f652f8deac4e23f4a5a0d2acfb07e5f35f 100644
+--- a/packages/coding-agent/src/core/extensions/loader.ts
++++ b/packages/coding-agent/src/core/extensions/loader.ts
+@@ -7,8 +7,9 @@ import * as fs from "node:fs";
+ import { createRequire } from "node:module";
+ import * as path from "node:path";
+ import { fileURLToPath } from "node:url";
++import type { AgentMessage } from "@earendil-works/pi-agent-core";
+ import * as _bundledPiAgentCore from "@earendil-works/pi-agent-core";
+-import type { Provider } from "@earendil-works/pi-ai";
++import type { Model, Provider } from "@earendil-works/pi-ai";
+ import * as _bundledPiAiCompat from "@earendil-works/pi-ai/compat";
+ import * as _bundledPiAiOauth from "@earendil-works/pi-ai/oauth";
+ import * as _bundledPiAiProviders from "@earendil-works/pi-ai/providers/all";
+@@ -26,6 +27,7 @@ import { CONFIG_DIR_NAME, getAgentDir, isBunBinary, isBundledNode } from "../../
+ // avoiding a circular dependency. Extensions can import from @earendil-works/pi-coding-agent.
+ import * as _bundledPiCodingAgent from "../../index.ts";
+ import { resolvePath } from "../../utils/paths.ts";
++import type { CompactionResult } from "../compaction/index.ts";
+ import { createEventBus, type EventBus } from "../event-bus.ts";
+ import type { ExecOptions } from "../exec.ts";
+ import { execCommand } from "../exec.ts";
+@@ -195,6 +197,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
+ 		setLabel: notInitialized,
+ 		getActiveTools: notInitialized,
+ 		getAllTools: notInitialized,
++		getToolDefinition: notInitialized,
+ 		setActiveTools: notInitialized,
+ 		// registerTool() is valid during extension load; refresh is only needed post-bind.
+ 		refreshTools: () => {},
+@@ -293,6 +296,38 @@ function createExtensionAPI(
+ 			runtime.refreshTools();
+ 		},
+ 
++		registerContextHandler(
++			id: string,
++			version: number,
++			assertReady?: () => void,
++			requiresModel?: (model: Model<any>) => boolean,
++			validateProjection?: (messages: AgentMessage[], originalMessages: AgentMessage[]) => void,
++			validateCompaction?: (
++				compaction: CompactionResult,
++				preparedBoundary: Pick<CompactionResult, "firstKeptEntryId" | "tokensBefore">,
++			) => void,
++		): void {
++			assertActive();
++			if (!/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/.test(id)) {
++				throw new Error(`Invalid context handler id: ${id}`);
++			}
++			if (!Number.isInteger(version) || version < 1) {
++				throw new Error(`Invalid context handler version: ${version}`);
++			}
++			const existing = extension.contextHandlers.get(id);
++			if (existing && existing.version !== version) {
++				throw new Error(`Context handler ${id} is already registered with version ${existing.version}`);
++			}
++			extension.contextHandlers.set(id, {
++				id,
++				version,
++				...(assertReady ? { assertActive: assertReady } : {}),
++				...(requiresModel ? { requiresModel } : {}),
++				...(validateProjection ? { validateProjection } : {}),
++				...(validateCompaction ? { validateCompaction } : {}),
++			});
++		},
++
+ 		registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
+ 			assertActive();
+ 			extension.commands.set(name, {
+@@ -402,6 +437,11 @@ function createExtensionAPI(
+ 			return runtime.getAllTools();
+ 		},
+ 
++		getToolDefinition(name: string) {
++			assertActive();
++			return runtime.getToolDefinition(name);
++		},
++
+ 		setActiveTools(toolNames: string[]): void {
+ 			assertActive();
+ 			runtime.setActiveTools(toolNames);
+@@ -532,6 +572,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
+ 		sourceInfo: createSyntheticSourceInfo(extensionPath, { source, baseDir }),
+ 		handlers: new Map(),
+ 		tools: new Map(),
++		contextHandlers: new Map(),
+ 		messageRenderers: new Map(),
+ 		entryRenderers: new Map(),
+ 		commands: new Map(),
+diff --git a/packages/coding-agent/src/core/extensions/runner.ts b/packages/coding-agent/src/core/extensions/runner.ts
+index 3346645a10456c36f5fc3051fda1540c4e7d1f8b..0ca25cd5c9dd812f695f758e69e6ac5d002666b6 100644
+--- a/packages/coding-agent/src/core/extensions/runner.ts
++++ b/packages/coding-agent/src/core/extensions/runner.ts
+@@ -6,6 +6,8 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
+ import type { ImageContent, Model, Provider, ProviderHeaders } from "@earendil-works/pi-ai";
+ import type { KeyId } from "@earendil-works/pi-tui";
+ import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
++import type { CompactionResult } from "../compaction/index.ts";
++import { getRequiredContextHandler } from "../context-handler-requirement.ts";
+ import type { ResourceDiagnostic } from "../diagnostics.ts";
+ import type { KeybindingsConfig } from "../keybindings.ts";
+ import type { ModelRegistry } from "../model-registry.ts";
+@@ -20,6 +22,7 @@ import type {
+ 	CompactOptions,
+ 	ContextEvent,
+ 	ContextEventResult,
++	ContextHandlerRegistration,
+ 	ContextUsage,
+ 	EntryRenderer,
+ 	Extension,
+@@ -190,15 +193,11 @@ export type ShutdownHandler = () => void;
+  * Helper function to emit session_shutdown event to extensions.
+  * Returns true if the event was emitted, false if there were no handlers.
+  */
+-export async function emitSessionShutdownEvent(
++export function emitSessionShutdownEvent(
+ 	extensionRunner: ExtensionRunner,
+ 	event: SessionShutdownEvent,
+ ): Promise<boolean> {
+-	if (extensionRunner.hasHandlers("session_shutdown")) {
+-		await extensionRunner.emit(event);
+-		return true;
+-	}
+-	return false;
++	return extensionRunner.emitSessionShutdown(event);
+ }
+ 
+ export async function emitProjectTrustEvent(
+@@ -296,6 +295,7 @@ export class ExtensionRunner {
+ 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
+ 	private commandDiagnostics: ResourceDiagnostic[] = [];
+ 	private staleMessage: string | undefined;
++	private sessionShutdown: Promise<boolean> | undefined;
+ 	private uiPromptDepth = 0;
+ 	private activeUIPrompt: { kind: UIPromptKind; title?: string } | undefined;
+ 
+@@ -307,6 +307,7 @@ export class ExtensionRunner {
+ 		modelRegistry: ModelRegistry,
+ 	) {
+ 		this.extensions = extensions;
++		this.getLiveContextHandlers();
+ 		this.runtime = runtime;
+ 		this.uiContext = noOpUIContext;
+ 		this.cwd = cwd;
+@@ -332,6 +333,7 @@ export class ExtensionRunner {
+ 		this.runtime.setLabel = actions.setLabel;
+ 		this.runtime.getActiveTools = actions.getActiveTools;
+ 		this.runtime.getAllTools = actions.getAllTools;
++		this.runtime.getToolDefinition = actions.getToolDefinition;
+ 		this.runtime.setActiveTools = actions.setActiveTools;
+ 		this.runtime.refreshTools = actions.refreshTools;
+ 		this.runtime.getCommands = actions.getCommands;
+@@ -626,6 +628,75 @@ export class ExtensionRunner {
+ 		return false;
+ 	}
+ 
++	emitSessionShutdown(event: SessionShutdownEvent): Promise<boolean> {
++		this.sessionShutdown ??= this.hasHandlers("session_shutdown")
++			? this.emit(event).then(() => true)
++			: Promise.resolve(false);
++		return this.sessionShutdown;
++	}
++
++	private getLiveContextHandlers(): Map<string, { extensionPath: string; handler: ContextHandlerRegistration }> {
++		const handlers = new Map<string, { extensionPath: string; handler: ContextHandlerRegistration }>();
++		for (const extension of this.extensions) {
++			for (const handler of extension.contextHandlers.values()) {
++				const existing = handlers.get(handler.id);
++				if (existing) {
++					throw new Error(
++						`Context handler "${handler.id}" is registered by both ${existing.extensionPath} and ${extension.path}`,
++					);
++				}
++				handlers.set(handler.id, { extensionPath: extension.path, handler });
++			}
++		}
++		return handlers;
++	}
++
++	assertContextHandler(id: string, version: number): boolean {
++		const handler = this.getLiveContextHandlers().get(id)?.handler;
++		if (handler?.version !== version) return false;
++		handler.assertActive?.();
++		return true;
++	}
++
++	hasModelContextHandlers(model: Model<any> | undefined): boolean {
++		return Boolean(
++			model &&
++				Array.from(this.getLiveContextHandlers().values()).some(({ handler }) => handler.requiresModel?.(model)),
++		);
++	}
++
++	assertModelContextHandlers(model: Model<any> | undefined): void {
++		if (!model) return;
++		for (const { handler } of this.getLiveContextHandlers().values()) {
++			if (handler.requiresModel?.(model)) handler.assertActive?.();
++		}
++	}
++
++	private getRequiredContextHandlerRegistration(): ContextHandlerRegistration | undefined {
++		const requirement = getRequiredContextHandler(this.sessionManager.getEntries());
++		if (!requirement) return undefined;
++		const handler = this.getLiveContextHandlers().get(requirement.handler)?.handler;
++		if (handler?.version === requirement.version) return handler;
++		throw new Error(`Required context handler "${requirement.handler}" version ${requirement.version} is not active`);
++	}
++
++	assertRequiredContextProjection(messages: AgentMessage[], originalMessages: AgentMessage[]): void {
++		const handler = this.getRequiredContextHandlerRegistration();
++		if (!handler) return;
++		handler.assertActive?.();
++		handler.validateProjection?.(messages, originalMessages);
++	}
++
++	assertRequiredContextCompaction(
++		compaction: CompactionResult,
++		preparedBoundary: Pick<CompactionResult, "firstKeptEntryId" | "tokensBefore">,
++	): void {
++		const handler = this.getRequiredContextHandlerRegistration();
++		if (!handler) return;
++		handler.assertActive?.();
++		handler.validateCompaction?.(compaction, preparedBoundary);
++	}
++
+ 	getMessageRenderer(customType: string): MessageRenderer | undefined {
+ 		for (const ext of this.extensions) {
+ 			const renderer = ext.messageRenderers.get(customType);
+@@ -1031,9 +1102,12 @@ export class ExtensionRunner {
+ 		return undefined;
+ 	}
+ 
+-	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
++	async emitContext(messages: AgentMessage[], failClosed = false): Promise<AgentMessage[]> {
+ 		const ctx = this.createContext();
+-		let currentMessages = structuredClone(messages);
++		const requiredProjection =
++			failClosed || getRequiredContextHandler(this.sessionManager.getEntries()) !== undefined;
++		const originalMessages = requiredProjection ? structuredClone(messages) : messages;
++		let currentMessages = structuredClone(originalMessages);
+ 
+ 		for (const ext of this.extensions) {
+ 			const handlers = ext.handlers.get("context");
+@@ -1056,10 +1130,14 @@ export class ExtensionRunner {
+ 						error: message,
+ 						stack,
+ 					});
++					if (requiredProjection) {
++						throw new Error(`Required context handler projection failed: ${message}`);
++					}
+ 				}
+ 			}
+ 		}
+ 
++		if (requiredProjection) this.assertRequiredContextProjection(currentMessages, originalMessages);
+ 		return currentMessages;
+ 	}
+ 
+diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
+index eaff3a86ebf50ec543faf936699f5e6c84dfdf65..089ec5912f0959bcd91758d7a931b3bbbac009ba 100644
+--- a/packages/coding-agent/src/core/extensions/types.ts
++++ b/packages/coding-agent/src/core/extensions/types.ts
+@@ -1249,6 +1249,24 @@ export type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContex
+ /**
+  * ExtensionAPI passed to extension factory functions.
+  */
++export interface ContextHandlerRegistration {
++	/** Stable identifier persisted by a context-owning extension. */
++	readonly id: string;
++	/** Extension-defined handler compatibility version. */
++	readonly version: number;
++	/** Optional extension-owned compatibility check at the final dispatch boundary. */
++	readonly assertActive?: () => void;
++	/** Declares models that cannot dispatch unless this handler activates successfully. */
++	readonly requiresModel?: (model: Model<any>) => boolean;
++	/** Validates final context against a private copy of the original pre-hook input. */
++	readonly validateProjection?: (messages: AgentMessage[], originalMessages: AgentMessage[]) => void;
++	/** Validates final compaction against the host's original retained-tail/token boundary before append. */
++	readonly validateCompaction?: (
++		compaction: CompactionResult,
++		preparedBoundary: Pick<CompactionResult, "firstKeptEntryId" | "tokensBefore">,
++	) => void;
++}
++
+ export interface ExtensionAPI {
+ 	// =========================================================================
+ 	// Event Subscription
+@@ -1309,6 +1327,23 @@ export interface ExtensionAPI {
+ 		tool: ToolDefinition<TParams, TDetails, TState>,
+ 	): void;
+ 
++	/**
++	 * Register this extension as the active owner of persisted context-window state.
++	 * Sessions that declare this handler refuse dispatch and compaction unless the
++	 * same id and version are registered by the current extension runtime.
++	 */
++	registerContextHandler(
++		id: string,
++		version: number,
++		assertActive?: () => void,
++		requiresModel?: (model: Model<any>) => boolean,
++		validateProjection?: (messages: AgentMessage[], originalMessages: AgentMessage[]) => void,
++		validateCompaction?: (
++			compaction: CompactionResult,
++			preparedBoundary: Pick<CompactionResult, "firstKeptEntryId" | "tokensBefore">,
++		) => void,
++	): void;
++
+ 	// =========================================================================
+ 	// Command, Shortcut, Flag Registration
+ 	// =========================================================================
+@@ -1402,6 +1437,9 @@ export interface ExtensionAPI {
+ 	/** Get all configured tools with parameter schema, prompt guidelines, and source metadata. */
+ 	getAllTools(): ToolInfo[];
+ 
++	/** Get the effective original definition for a configured tool. */
++	getToolDefinition(name: string): ToolDefinition | undefined;
++
+ 	/** Set the active tools by name. */
+ 	setActiveTools(toolNames: string[]): void;
+ 
+@@ -1648,6 +1686,8 @@ export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters
+ 
+ export type GetAllToolsHandler = () => ToolInfo[];
+ 
++export type GetToolDefinitionHandler = (name: string) => ToolDefinition | undefined;
++
+ export type GetCommandsHandler = () => SlashCommandInfo[];
+ 
+ export type SetActiveToolsHandler = (toolNames: string[]) => void;
+@@ -1702,6 +1742,7 @@ export interface ExtensionActions {
+ 	setLabel: SetLabelHandler;
+ 	getActiveTools: GetActiveToolsHandler;
+ 	getAllTools: GetAllToolsHandler;
++	getToolDefinition: GetToolDefinitionHandler;
+ 	setActiveTools: SetActiveToolsHandler;
+ 	refreshTools: RefreshToolsHandler;
+ 	getCommands: GetCommandsHandler;
+@@ -1769,6 +1810,7 @@ export interface Extension {
+ 	sourceInfo: SourceInfo;
+ 	handlers: Map<string, HandlerFn[]>;
+ 	tools: Map<string, RegisteredTool>;
++	contextHandlers: Map<string, ContextHandlerRegistration>;
+ 	messageRenderers: Map<string, MessageRenderer>;
+ 	markdownTransformer?: MarkdownTransformer;
+ 	entryRenderers?: Map<string, EntryRenderer>;
+diff --git a/packages/coding-agent/src/core/model-runtime.ts b/packages/coding-agent/src/core/model-runtime.ts
+index a7bfec8b7653c37f5dc909cd07a17ae61c397d56..7d58c73e430a23e86b8939bf3b6226becb998543 100644
+--- a/packages/coding-agent/src/core/model-runtime.ts
++++ b/packages/coding-agent/src/core/model-runtime.ts
+@@ -738,13 +738,20 @@ export class ModelRuntime implements Models {
+ 		return { aborted: result.aborted || (options.signal?.aborted ?? false), errors };
+ 	}
+ 
+-	registerNativeProvider(provider: Provider): void {
++	registerNativeProvider(provider: Provider): () => void {
+ 		if (!provider.id.trim()) throw new Error("Provider id must not be empty.");
+ 		this.extensionProviders.delete(provider.id);
+ 		this.nativeExtensionProviders.set(provider.id, provider);
+ 		this.recomposeProvider(provider.id);
+ 		this.updateModelSnapshot();
+ 		void this.refresh({ allowNetwork: false });
++		return () => {
++			if (this.nativeExtensionProviders.get(provider.id) !== provider) return;
++			this.nativeExtensionProviders.delete(provider.id);
++			this.recomposeProvider(provider.id);
++			this.updateModelSnapshot();
++			void this.refresh({ allowNetwork: false });
++		};
+ 	}
+ 
+ 	registerProvider(providerId: string, config: ProviderConfigInput): void {
+diff --git a/packages/coding-agent/src/core/sdk.ts b/packages/coding-agent/src/core/sdk.ts
+index adbf102a398289212122c4b187b1bed8d79a08be..9f1f7e6ca26f87df2fe4f5cb2e36327ae7768e58 100644
+--- a/packages/coding-agent/src/core/sdk.ts
++++ b/packages/coding-agent/src/core/sdk.ts
+@@ -5,6 +5,7 @@ import { getAgentDir } from "../config.ts";
+ import { resolvePath } from "../utils/paths.ts";
+ import { AgentSession } from "./agent-session.ts";
+ import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
++import { getRequiredContextHandler } from "./context-handler-requirement.ts";
+ import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+ import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+ import { convertToLlm } from "./messages.ts";
+@@ -263,6 +264,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
+ 	).filter((name) => !excludedToolNameSet?.has(name));
+ 
+ 	let agent: Agent;
++	let session: AgentSession | undefined;
+ 
+ 	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
+ 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
+@@ -312,6 +314,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
+ 		},
+ 		convertToLlm: convertToLlmWithBlockImages,
+ 		streamFn: async (model, context, options) => {
++			// Extension transform/payload hooks deliberately isolate failures. Check the
++			// persisted requirement at the final core-owned dispatch boundary instead.
++			session?.assertRequiredContextHandler();
++			const required = getRequiredContextHandler(sessionManager.getEntries());
++			const requestSnapshot = required
++				? {
++						sessionId: sessionManager.getSessionId(),
++						leafId: sessionManager.getLeafId(),
++						model: session?.model,
++					}
++				: undefined;
+ 			const providerRetrySettings = settingsManager.getProviderRetrySettings();
+ 			const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
+ 			// SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
+@@ -334,9 +347,21 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
+ 						options?.sessionId,
+ 						requestHeaders,
+ 					);
+-					return headerRunner?.hasHandlers("before_provider_headers")
+-						? headerRunner.emitBeforeProviderHeaders(headers ?? {})
++					const transformed = headerRunner?.hasHandlers("before_provider_headers")
++						? await headerRunner.emitBeforeProviderHeaders(headers ?? {})
+ 						: (headers ?? {});
++					if (requestSnapshot) {
++						if (
++							sessionManager.getSessionId() !== requestSnapshot.sessionId ||
++							sessionManager.getLeafId() !== requestSnapshot.leafId ||
++							session?.model !== requestSnapshot.model ||
++							!getRequiredContextHandler(sessionManager.getEntries())
++						) {
++							throw new Error("Required context changed while request authentication was resolving");
++						}
++						session?.assertRequiredContextHandler();
++					}
++					return transformed;
+ 				},
+ 			});
+ 		},
+@@ -362,7 +387,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
+ 		transformContext: async (messages) => {
+ 			const runner = extensionRunnerRef.current;
+ 			if (!runner) return messages;
+-			return runner.emitContext(messages);
++			const required = getRequiredContextHandler(sessionManager.getEntries()) !== undefined;
++			const transformed = await runner.emitContext(messages, required);
++			session?.assertRequiredContextHandler();
++			return transformed;
+ 		},
+ 		steeringMode: settingsManager.getSteeringMode(),
+ 		followUpMode: settingsManager.getFollowUpMode(),
+@@ -385,7 +413,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
+ 		sessionManager.appendThinkingLevelChange(thinkingLevel);
+ 	}
+ 
+-	const session = new AgentSession({
++	session = new AgentSession({
+ 		agent,
+ 		sessionManager,
+ 		settingsManager,
+diff --git a/packages/coding-agent/src/index.ts b/packages/coding-agent/src/index.ts
+index 6667389f1cdd71f3342626b9f5aab45bee755958..d7354a95ef93b75ad9d27b0b1a107aa096e5abf9 100644
+--- a/packages/coding-agent/src/index.ts
++++ b/packages/coding-agent/src/index.ts
+@@ -67,6 +67,7 @@ export type {
+ 	BuildSystemPromptOptions,
+ 	CompactOptions,
+ 	ContextEvent,
++	ContextHandlerRegistration,
+ 	ContextUsage,
+ 	CustomToolCallEvent,
+ 	EditToolCallEvent,
+diff --git a/packages/coding-agent/test/agent-session-concurrent.test.ts b/packages/coding-agent/test/agent-session-concurrent.test.ts
+index bd825ec7e6dfeb82c510c4f6aafe4aebc20aa324..2176c21de1f0a912670c7fa7bb71827075c42e88 100644
+--- a/packages/coding-agent/test/agent-session-concurrent.test.ts
++++ b/packages/coding-agent/test/agent-session-concurrent.test.ts
+@@ -16,12 +16,11 @@ import {
+ 	type TextContent,
+ } from "@earendil-works/pi-ai/compat";
+ import { Type } from "typebox";
+-import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ import { AgentSession } from "../src/core/agent-session.ts";
+ import { AuthStorage } from "../src/core/auth-storage.ts";
+ import { SessionManager } from "../src/core/session-manager.ts";
+ import { SettingsManager } from "../src/core/settings-manager.ts";
+-import type { BuildSystemPromptOptions } from "../src/core/system-prompt.ts";
+ import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
+ 
+ // Mock stream that mimics AssistantMessageEventStream
+@@ -434,44 +433,20 @@ describe("AgentSession concurrent prompt guard", () => {
+ 		});
+ 
+ 		const snapshots: string[][] = [];
+-		const sessionWithRunner = session as unknown as {
+-			_extensionRunner?: {
+-				hasHandlers: (eventType: string) => boolean;
+-				emit: (event: { type: string; message?: { role?: string } }) => Promise<void>;
+-				emitMessageEnd: (event: { type: string; message?: { role?: string } }) => Promise<undefined>;
+-				emitToolCall: (event: { type: string; toolCallId: string }) => Promise<undefined>;
+-				emitInput: (
+-					text: string,
+-					images: unknown,
+-					source: "interactive" | "rpc" | "extension",
+-					streamingBehavior?: "steer" | "followUp",
+-				) => Promise<{ action: "continue" }>;
+-				emitBeforeAgentStart: (
+-					prompt: string,
+-					images: unknown,
+-					systemPrompt: string,
+-					systemPromptOptions: BuildSystemPromptOptions,
+-				) => Promise<undefined>;
+-				invalidate: (message?: string) => void;
+-			};
+-		};
+-		sessionWithRunner._extensionRunner = {
+-			hasHandlers: (eventType) => eventType === "tool_call",
+-			emit: async () => {},
+-			emitMessageEnd: async () => undefined,
+-			emitToolCall: async () => {
+-				snapshots.push(
+-					sessionManager
+-						.getEntries()
+-						.filter((entry) => entry.type === "message")
+-						.map((entry) => entry.message.role),
+-				);
+-				return undefined;
+-			},
+-			emitInput: async () => ({ action: "continue" }),
+-			emitBeforeAgentStart: async () => undefined,
+-			invalidate: () => {},
+-		};
++		const runner = session.extensionRunner;
++		const hasHandlers = runner.hasHandlers.bind(runner);
++		vi.spyOn(runner, "hasHandlers").mockImplementation(
++			(eventType) => eventType === "tool_call" || hasHandlers(eventType),
++		);
++		vi.spyOn(runner, "emitToolCall").mockImplementation(async () => {
++			snapshots.push(
++				sessionManager
++					.getEntries()
++					.filter((entry) => entry.type === "message")
++					.map((entry) => entry.message.role),
++			);
++			return undefined;
++		});
+ 
+ 		await session.prompt("hi");
+ 		await session.agent.waitForIdle();
+@@ -580,39 +555,13 @@ describe("AgentSession concurrent prompt guard", () => {
+ 			baseToolsOverride: { dummy: tool },
+ 		});
+ 
+-		const sessionWithRunner = session as unknown as {
+-			_extensionRunner?: {
+-				hasHandlers: (eventType: string) => boolean;
+-				emit: (event: { type: string; message?: { role?: string } }) => Promise<void>;
+-				emitMessageEnd: (event: { type: string; message?: { role?: string } }) => Promise<undefined>;
+-				emitInput: (
+-					text: string,
+-					images: unknown,
+-					source: "interactive" | "rpc" | "extension",
+-					streamingBehavior?: "steer" | "followUp",
+-				) => Promise<{ action: "continue" }>;
+-				emitBeforeAgentStart: (
+-					prompt: string,
+-					images: unknown,
+-					systemPrompt: string,
+-					systemPromptOptions: BuildSystemPromptOptions,
+-				) => Promise<undefined>;
+-				invalidate: (message?: string) => void;
+-			};
+-		};
+-		sessionWithRunner._extensionRunner = {
+-			hasHandlers: () => false,
+-			emit: async () => {},
+-			emitMessageEnd: async (event) => {
+-				if (event.type === "message_end" && event.message?.role === "assistant") {
+-					await new Promise((resolve) => setTimeout(resolve, 40));
+-				}
+-				return undefined;
+-			},
+-			emitInput: async () => ({ action: "continue" }),
+-			emitBeforeAgentStart: async () => undefined,
+-			invalidate: () => {},
+-		};
++		const runner = session.extensionRunner;
++		vi.spyOn(runner, "emitMessageEnd").mockImplementation(async (event) => {
++			if (event.message.role === "assistant") {
++				await new Promise((resolve) => setTimeout(resolve, 40));
++			}
++			return undefined;
++		});
+ 
+ 		await session.prompt("hi");
+ 		await session.agent.waitForIdle();
+diff --git a/packages/coding-agent/test/auth-check.test.ts b/packages/coding-agent/test/auth-check.test.ts
+index 5f1ce6327975dd41a546ed049a2cca38114aeeed..5159f34f46cfeabcfd09aacfbe7337a36a54a306 100644
+--- a/packages/coding-agent/test/auth-check.test.ts
++++ b/packages/coding-agent/test/auth-check.test.ts
+@@ -10,6 +10,10 @@ import { AuthStorage, ReadOnlyAuthStorage } from "../src/core/auth-storage.ts";
+ import { ModelRuntime } from "../src/core/model-runtime.ts";
+ 
+ const tempDir = join(tmpdir(), `pi-test-auth-check-${Date.now()}-${Math.random().toString(36).slice(2)}`);
++const CODEX_ACCESS_TOKEN =
++	"offline.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoidGVzdC1jb2RleC1hY2NvdW50In19.old";
++const REFRESHED_CODEX_ACCESS_TOKEN =
++	"offline.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoidGVzdC1jb2RleC1hY2NvdW50In19.fresh";
+ 
+ async function createRuntime(credentials: AuthStorage | ReadOnlyAuthStorage): Promise<ModelRuntime> {
+ 	return ModelRuntime.create({
+@@ -62,7 +66,7 @@ describe("auth check command", () => {
+ 		);
+ 
+ 		const credentials = AuthStorage.inMemory({
+-			"openai-codex": { type: "oauth", access: "old-token", refresh: "refresh-token", expires: 0 },
++			"openai-codex": { type: "oauth", access: CODEX_ACCESS_TOKEN, refresh: "refresh-token", expires: 0 },
+ 		});
+ 		const oauthRuntime = await createRuntime(credentials);
+ 		const oauth = oauthRuntime.getProvider("openai-codex")?.auth.oauth;
+@@ -71,21 +75,21 @@ describe("auth check command", () => {
+ 		oauth.refresh = refresh;
+ 
+ 		await expect(getProviderCredential("openai-codex", oauthRuntime, credentials, { refresh: false })).resolves.toBe(
+-			"old-token",
++			CODEX_ACCESS_TOKEN,
+ 		);
+ 		expect(refresh).not.toHaveBeenCalled();
+ 	});
+ 
+ 	test("refreshes OAuth by default", async () => {
+ 		const credentials = AuthStorage.inMemory({
+-			"openai-codex": { type: "oauth", access: "old-token", refresh: "refresh-token", expires: 0 },
++			"openai-codex": { type: "oauth", access: CODEX_ACCESS_TOKEN, refresh: "refresh-token", expires: 0 },
+ 		});
+ 		const runtime = await createRuntime(credentials);
+ 		const oauth = runtime.getProvider("openai-codex")?.auth.oauth;
+ 		if (!oauth) throw new Error("OpenAI Codex OAuth provider is not registered");
+ 		const refresh = vi.fn(async () => ({
+ 			type: "oauth" as const,
+-			access: "fresh-token",
++			access: REFRESHED_CODEX_ACCESS_TOKEN,
+ 			refresh: "refresh-token",
+ 			expires: Date.now() + 60 * 60 * 1000,
+ 		}));
+diff --git a/packages/coding-agent/test/compaction-extensions.test.ts b/packages/coding-agent/test/compaction-extensions.test.ts
+index 7b8f8e627fb1bf7b0d5045f15f29044e383c66ed..6825a0ade3d65f7c89b17eec84b0a59005b83662 100644
+--- a/packages/coding-agent/test/compaction-extensions.test.ts
++++ b/packages/coding-agent/test/compaction-extensions.test.ts
+@@ -76,6 +76,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
+ 			path: "test-extension",
+ 			resolvedPath: "/test/test-extension.ts",
+ 			sourceInfo: createSyntheticSourceInfo("<test:test-extension>", { source: "test" }),
++			contextHandlers: new Map(),
+ 			handlers,
+ 			tools: new Map(),
+ 			messageRenderers: new Map(),
+@@ -233,6 +234,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
+ 			path: "throwing-extension",
+ 			resolvedPath: "/test/throwing-extension.ts",
+ 			sourceInfo: createSyntheticSourceInfo("<test:throwing-extension>", { source: "test" }),
++			contextHandlers: new Map(),
+ 			handlers: new Map<string, ((event: any, ctx: any) => Promise<any>)[]>([
+ 				[
+ 					"session_before_compact",
+@@ -282,6 +284,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
+ 			path: "extension1",
+ 			resolvedPath: "/test/extension1.ts",
+ 			sourceInfo: createSyntheticSourceInfo("<test:extension1>", { source: "test" }),
++			contextHandlers: new Map(),
+ 			handlers: new Map<string, ((event: any, ctx: any) => Promise<any>)[]>([
+ 				[
+ 					"session_before_compact",
+@@ -313,6 +316,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
+ 			path: "extension2",
+ 			resolvedPath: "/test/extension2.ts",
+ 			sourceInfo: createSyntheticSourceInfo("<test:extension2>", { source: "test" }),
++			contextHandlers: new Map(),
+ 			handlers: new Map<string, ((event: any, ctx: any) => Promise<any>)[]>([
+ 				[
+ 					"session_before_compact",
+diff --git a/packages/coding-agent/test/compaction.test.ts b/packages/coding-agent/test/compaction.test.ts
+index 12c9d0be220319aa5056c470f069a8a3025d39c0..870c1dc26284d4614aadb4ba0bcb450e4bf8dd87 100644
+--- a/packages/coding-agent/test/compaction.test.ts
++++ b/packages/coding-agent/test/compaction.test.ts
+@@ -333,6 +333,45 @@ describe("findCutPoint", () => {
+ 		expect(result.firstKeptEntryIndex).toBe(0);
+ 	});
+ 
++	it("should retain an oversized tool-call turn from its assistant entry", () => {
++		const entries: SessionEntry[] = [
++			createMessageEntry(createUserMessage("older turn")),
++			createMessageEntry(createAssistantMessage("older response")),
++			createMessageEntry(createUserMessage("current turn")),
++			createMessageEntry({
++				...createAssistantMessage(""),
++				content: [
++					{ type: "toolCall", id: "tool-call-1", name: "read", arguments: { path: "large-file-1" } },
++					{ type: "toolCall", id: "tool-call-2", name: "read", arguments: { path: "large-file-2" } },
++				],
++				stopReason: "toolUse",
++			}),
++			createMessageEntry({
++				role: "toolResult",
++				toolCallId: "tool-call-1",
++				toolName: "read",
++				content: [{ type: "text", text: "x".repeat(25_000) }],
++				isError: false,
++				timestamp: Date.now(),
++			}),
++			createMessageEntry({
++				role: "toolResult",
++				toolCallId: "tool-call-2",
++				toolName: "read",
++				content: [{ type: "text", text: "y".repeat(25_000) }],
++				isError: false,
++				timestamp: Date.now(),
++			}),
++		];
++
++		const result = findCutPoint(entries, 0, entries.length, 10_000);
++
++		expect(result.firstKeptEntryIndex).toBe(3);
++		expect((entries[result.firstKeptEntryIndex] as SessionMessageEntry).message.role).toBe("assistant");
++		expect(result.isSplitTurn).toBe(true);
++		expect(result.turnStartIndex).toBe(2);
++	});
++
+ 	it("should indicate split turn when cutting at assistant message", () => {
+ 		// Create a scenario where we cut at an assistant message mid-turn
+ 		const entries: SessionEntry[] = [
+diff --git a/packages/coding-agent/test/credential-print.test.ts b/packages/coding-agent/test/credential-print.test.ts
+index a1ca56d9c7e0d6641fe404fbe652a6ab552bc9de..7f16c5e0cd1ac75163359f9d44a8c2b5ba50095e 100644
+--- a/packages/coding-agent/test/credential-print.test.ts
++++ b/packages/coding-agent/test/credential-print.test.ts
+@@ -7,6 +7,11 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
+ import { ModelRuntime } from "../src/core/model-runtime.ts";
+ import { main } from "../src/main.ts";
+ 
++const CODEX_ACCESS_TOKEN =
++	"offline.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoidGVzdC1jb2RleC1hY2NvdW50In19.old";
++const REFRESHED_CODEX_ACCESS_TOKEN =
++	"offline.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoidGVzdC1jb2RleC1hY2NvdW50In19.fresh";
++
+ async function createRuntime(credentials: AuthStorage): Promise<ModelRuntime> {
+ 	return ModelRuntime.create({
+ 		credentials,
+@@ -44,7 +49,7 @@ describe("credential print commands", () => {
+ 		const storage = AuthStorage.inMemory({
+ 			"openai-codex": {
+ 				type: "oauth",
+-				access: "old-test-token",
++				access: CODEX_ACCESS_TOKEN,
+ 				refresh: "test-refresh-token",
+ 				expires: 0,
+ 			},
+@@ -52,7 +57,7 @@ describe("credential print commands", () => {
+ 		const runtime = await createRuntime(storage);
+ 		const refresh = vi.fn(async () => ({
+ 			type: "oauth" as const,
+-			access: "fresh-test-token",
++			access: REFRESHED_CODEX_ACCESS_TOKEN,
+ 			refresh: "test-refresh-token",
+ 			expires: Date.now() + 60 * 60 * 1000,
+ 		}));
+@@ -61,9 +66,11 @@ describe("credential print commands", () => {
+ 		oauth.refresh = refresh;
+ 		const args = parseArgs(["--provider", "openai-codex"]);
+ 
+-		await expect(resolveCredentialForPrint(args, runtime, "bearer_token")).resolves.toBe("fresh-test-token");
++		await expect(resolveCredentialForPrint(args, runtime, "bearer_token")).resolves.toBe(
++			REFRESHED_CODEX_ACCESS_TOKEN,
++		);
+ 		expect(refresh).toHaveBeenCalledOnce();
+-		expect(await storage.read("openai-codex")).toMatchObject({ access: "fresh-test-token" });
++		expect(await storage.read("openai-codex")).toMatchObject({ access: REFRESHED_CODEX_ACCESS_TOKEN });
+ 	});
+ 
+ 	test("reports unknown auth options like package commands", async () => {
+@@ -89,7 +96,7 @@ describe("credential print commands", () => {
+ 			AuthStorage.inMemory({
+ 				"openai-codex": {
+ 					type: "oauth",
+-					access: "test-token-not-to-be-printed",
++					access: CODEX_ACCESS_TOKEN,
+ 					refresh: "test-refresh-token",
+ 					expires: Date.now() + 60 * 60 * 1000,
+ 				},
+diff --git a/packages/coding-agent/test/extensions-runner.test.ts b/packages/coding-agent/test/extensions-runner.test.ts
+index 70f06a3cf64d88e0186bc2afa8a53e936f46a17f..5c5ad0cd1bef55288e8de969916996ca1fb7390c 100644
+--- a/packages/coding-agent/test/extensions-runner.test.ts
++++ b/packages/coding-agent/test/extensions-runner.test.ts
+@@ -80,6 +80,7 @@ describe("ExtensionRunner", () => {
+ 		setLabel: () => {},
+ 		getActiveTools: () => [],
+ 		getAllTools: () => [],
++		getToolDefinition: () => undefined,
+ 		setActiveTools: () => {},
+ 		refreshTools: () => {},
+ 		getCommands: () => [],
+@@ -118,6 +119,107 @@ describe("ExtensionRunner", () => {
+ 		});
+ 	});
+ 
++	it("awaits one shared shutdown emission before callers invalidate extension contexts", async () => {
++		const extensionPath = path.join(extensionsDir, "async-shutdown.ts");
++		fs.writeFileSync(
++			extensionPath,
++			`export default function(pi) {
++	pi.on("session_shutdown", async (_event, ctx) => {
++		await Promise.resolve();
++		ctx.sessionManager.getSessionId();
++	});
++}`,
++		);
++		const result = await loadExtensions([extensionPath], tempDir);
++		const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
++		const errors: string[] = [];
++		runner.onError((error) => errors.push(error.error));
++
++		const first = runner.emitSessionShutdown({ type: "session_shutdown", reason: "quit" });
++		const second = runner.emitSessionShutdown({ type: "session_shutdown", reason: "quit" });
++		expect(second).toBe(first);
++		await first;
++		runner.invalidate();
++
++		expect(await second).toBe(true);
++		expect(errors).toEqual([]);
++	});
++
++	it("rejects duplicate context-handler ids from separate extensions before session startup", async () => {
++		const firstPath = path.join(extensionsDir, "first-context-handler.ts");
++		const secondPath = path.join(extensionsDir, "second-context-handler.ts");
++		for (const extensionPath of [firstPath, secondPath]) {
++			fs.writeFileSync(
++				extensionPath,
++				`export default function(pi) {
++	pi.registerContextHandler("astra-remote", 1);
++}`,
++			);
++		}
++
++		const result = await loadExtensions([firstPath, secondPath], tempDir);
++		expect(
++			() => new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry),
++		).toThrow('Context handler "astra-remote" is registered by both');
++	});
++
++	it("rejects a duplicate context handler registered after runner construction", async () => {
++		const firstPath = path.join(extensionsDir, "late-context-handler.ts");
++		const secondPath = path.join(extensionsDir, "existing-context-handler.ts");
++		fs.writeFileSync(
++			firstPath,
++			`export default function(pi) {
++	pi.registerContextHandler("first", 1);
++	pi.on("session_start", () => pi.registerContextHandler("astra-remote", 1));
++}`,
++		);
++		fs.writeFileSync(
++			secondPath,
++			`export default function(pi) {
++	pi.registerContextHandler("astra-remote", 1);
++}`,
++		);
++
++		const result = await loadExtensions([firstPath, secondPath], tempDir);
++		const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
++		await runner.emit({ type: "session_start", reason: "startup" });
++
++		expect(() => runner.assertContextHandler("astra-remote", 1)).toThrow(
++			'Context handler "astra-remote" is registered by both',
++		);
++	});
++
++	it("uses a same-version live context-handler replacement for readiness, model checks, and projection validation", async () => {
++		const extensionPath = path.join(extensionsDir, "replace-context-handler.ts");
++		fs.writeFileSync(
++			extensionPath,
++			`export default function(pi) {
++	pi.registerContextHandler("astra-remote", 1, () => { throw new Error("initial readiness"); });
++	pi.on("session_start", () => pi.registerContextHandler(
++		"astra-remote",
++		1,
++		() => {},
++		(model) => model.id === "selected",
++		() => { throw new Error("replacement projection"); },
++	));
++}`,
++		);
++
++		const result = await loadExtensions([extensionPath], tempDir);
++		const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
++		await runner.emit({ type: "session_start", reason: "startup" });
++		sessionManager.appendCustomEntry("pi.required-context-handler", {
++			protocol: 1,
++			handler: "astra-remote",
++			version: 1,
++		});
++
++		expect(() => runner.assertContextHandler("astra-remote", 1)).not.toThrow();
++		expect(runner.hasModelContextHandlers({ id: "selected" } as never)).toBe(true);
++		expect(() => runner.assertModelContextHandlers({ id: "selected" } as never)).not.toThrow();
++		expect(() => runner.assertRequiredContextProjection([], [])).toThrow("replacement projection");
++	});
++
+ 	describe("project_trust", () => {
+ 		it("continues past undecided handlers and returns the first yes/no decision", async () => {
+ 			const undecidedPath = path.join(extensionsDir, "undecided.ts");
+diff --git a/packages/coding-agent/test/suite/agent-session-model-extension.test.ts b/packages/coding-agent/test/suite/agent-session-model-extension.test.ts
+index f024a67d15150283131bd33d53dcc2f6d39e58c4..adee7d8db11de4d9da1d3502301ab69bb85f0d20 100644
+--- a/packages/coding-agent/test/suite/agent-session-model-extension.test.ts
++++ b/packages/coding-agent/test/suite/agent-session-model-extension.test.ts
+@@ -1,3 +1,4 @@
++import assert from "node:assert/strict";
+ import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
+ import { fauxAssistantMessage, fauxToolCall, type Model, type Usage } from "@earendil-works/pi-ai";
+ import { Type } from "typebox";
+@@ -46,6 +47,94 @@ describe("AgentSession model and extension characterization", () => {
+ 		expect(harness.settingsManager.getDefaultModel()).toBeUndefined();
+ 	});
+ 
++	it.each(["set", "available-cycle", "scoped-cycle"] as const)(
++		"keeps ordinary %s observers after committed model and changed thinking state",
++		async (selection) => {
++			let harness: Harness | undefined;
++			let observed:
++				| { modelEntry: boolean; thinkingLevel: ThinkingLevel | undefined; defaultModel: string | undefined }
++				| undefined;
++			harness = await createHarness({
++				models: [
++					{ id: "faux-1", name: "One", reasoning: true },
++					{ id: "faux-2", name: "Two", reasoning: true },
++				],
++				extensionFactories: [
++					(pi) => {
++						pi.on("model_select", async (event) => {
++							assert(harness);
++							observed = {
++								modelEntry: harness.sessionManager
++									.getEntries()
++									.some((entry) => entry.type === "model_change" && entry.modelId === event.model.id),
++								thinkingLevel: harness.session.thinkingLevel,
++								defaultModel: harness.settingsManager.getDefaultModel(),
++							};
++						});
++					},
++				],
++			});
++			harnesses.push(harness);
++
++			const next = harness.getModel("faux-2");
++			assert(next);
++			harness.session.setThinkingLevel("high");
++			harness.settingsManager.setModelThinkingLevel("faux", "faux-2", "low");
++			if (selection === "scoped-cycle")
++				harness.session.setScopedModels([{ model: harness.getModel() }, { model: next }]);
++			if (selection === "set") await harness.session.setModel(next, { persist: true });
++			else await harness.session.cycleModel("forward", { persist: true });
++
++			expect(observed).toEqual({ modelEntry: true, thinkingLevel: "low", defaultModel: "faux-2" });
++		},
++	);
++
++	it.each(["set", "available-cycle", "scoped-cycle"] as const)(
++		"rolls back failed required-model %s activation before persisting",
++		async (selection) => {
++			let ready = false;
++			const harness = await createHarness({
++				models: [
++					{ id: "faux-1", name: "One", reasoning: true },
++					{ id: "faux-2", name: "Two", reasoning: true },
++				],
++				extensionFactories: [
++					(pi) => {
++						pi.registerContextHandler(
++							"model-test",
++							1,
++							() => {
++								if (!ready) throw new Error("activation not ready");
++							},
++							(model) => model.id === "faux-2",
++						);
++					},
++				],
++			});
++			harnesses.push(harness);
++			const previous = harness.getModel();
++			const next = harness.getModel("faux-2");
++			assert(next);
++			if (selection === "scoped-cycle") harness.session.setScopedModels([{ model: previous }, { model: next }]);
++			const select = (): Promise<unknown> =>
++				selection === "set"
++					? harness.session.setModel(next, { persist: true })
++					: harness.session.cycleModel("forward", { persist: true });
++			await expect(select()).rejects.toThrow("activation not ready");
++			expect(harness.session.model).toBe(previous);
++			expect(
++				harness.sessionManager
++					.getEntries()
++					.some((entry) => entry.type === "model_change" && entry.modelId === next.id),
++			).toBe(false);
++			expect(harness.settingsManager.getDefaultModel()).toBeUndefined();
++			ready = true;
++			await select();
++			expect(harness.session.model).toMatchObject({ id: next.id, provider: next.provider });
++			expect(harness.settingsManager.getDefaultModel()).toBe(next.id);
++		},
++	);
++
+ 	it("only persists model and thinking defaults when requested", async () => {
+ 		const harness = await createHarness({
+ 			models: [
+diff --git a/packages/coding-agent/src/core/context-handler-requirement.ts b/packages/coding-agent/src/core/context-handler-requirement.ts
+new file mode 100644
+index 000000000..30d0dc57c
+--- /dev/null
++++ b/packages/coding-agent/src/core/context-handler-requirement.ts
+@@ -0,0 +1,43 @@
++import type { SessionEntry } from "./session-manager.ts";
++
++export const REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE = "pi.required-context-handler";
++
++export interface RequiredContextHandler {
++	readonly handler: string;
++	readonly version: number;
++}
++
++const HANDLER_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
++
++function parseRequirement(value: unknown): RequiredContextHandler {
++	if (!value || typeof value !== "object" || Array.isArray(value)) {
++		throw new Error("Malformed required context-handler state");
++	}
++	const record = value as Record<string, unknown>;
++	if (
++		record["protocol"] !== 1 ||
++		typeof record["handler"] !== "string" ||
++		!HANDLER_ID_PATTERN.test(record["handler"]) ||
++		!Number.isInteger(record["version"]) ||
++		(record["version"] as number) < 1
++	) {
++		throw new Error("Malformed required context-handler state");
++	}
++	return { handler: record["handler"], version: record["version"] as number };
++}
++
++/** Returns the single persisted context handler requirement, if the session has one. */
++export function getRequiredContextHandler(entries: readonly SessionEntry[]): RequiredContextHandler | undefined {
++	let requirement: RequiredContextHandler | undefined;
++	for (const entry of entries) {
++		if (entry.type !== "custom" || entry.customType !== REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE) {
++			continue;
++		}
++		const parsed = parseRequirement(entry.data);
++		if (requirement && (requirement.handler !== parsed.handler || requirement.version !== parsed.version)) {
++			throw new Error("Conflicting required context-handler state");
++		}
++		requirement = parsed;
++	}
++	return requirement;
++}
+diff --git a/packages/coding-agent/test/agent-session-required-context-handler.test.ts b/packages/coding-agent/test/agent-session-required-context-handler.test.ts
+new file mode 100644
+index 000000000..fb1f3a427
+--- /dev/null
++++ b/packages/coding-agent/test/agent-session-required-context-handler.test.ts
+@@ -0,0 +1,151 @@
++import { fauxAssistantMessage, fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
++import { expect, test } from "vitest";
++import {
++	getRequiredContextHandler,
++	REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE,
++} from "../src/core/context-handler-requirement.ts";
++import {
++	createAgentSession,
++	DefaultResourceLoader,
++	ModelRuntime,
++	SessionManager,
++	SettingsManager,
++} from "../src/index.ts";
++
++const requiredState = { protocol: 1, handler: "astra-remote", version: 1 };
++
++test.each(["throws", "replaces context"] as const)(
++	"fails closed when a registered required context hook %s",
++	async (behavior) => {
++		const sessionManager = SessionManager.inMemory("/required-handler-test");
++		const settingsManager = SettingsManager.inMemory({
++			retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 },
++		});
++		const modelRuntime = await ModelRuntime.create({
++			credentials: new InMemoryCredentialStore(),
++			modelsPath: null,
++			refreshOnCreate: false,
++		});
++		let contextCalls = 0;
++		const provider = fauxProvider({
++			api: "required-handler-api",
++			provider: "required-handler-provider",
++			models: [{ id: "required-handler-model", contextWindow: 32_000, maxTokens: 1_000 }],
++		});
++		provider.setResponses([fauxAssistantMessage("first response")]);
++		modelRuntime.registerNativeProvider(provider.provider);
++
++		const protectedLoader = new DefaultResourceLoader({
++			cwd: "/required-handler-test",
++			agentDir: "/virtual/required-handler-test",
++			settingsManager,
++			noExtensions: true,
++			noSkills: true,
++			noPromptTemplates: true,
++			noThemes: true,
++			noContextFiles: true,
++			systemPrompt: "test",
++			appendSystemPrompt: [],
++			extensionFactories: [
++				{
++					name: "astra-remote",
++					factory: (pi) => {
++						pi.registerContextHandler("astra-remote", 1, undefined, undefined, (messages) => {
++							if (messages.length === 0) throw new Error("simulated final projection mutation");
++						});
++						pi.on("session_start", () => {
++							pi.appendEntry(REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE, requiredState);
++						});
++						pi.on("context", () => {
++							contextCalls += 1;
++						});
++					},
++				},
++				{
++					name: "late-mutator",
++					factory: (pi) => {
++						pi.on("context", () => {
++							if (behavior === "throws") throw new Error("simulated final projection mutation");
++							return { messages: [] };
++						});
++					},
++				},
++			],
++		});
++		await protectedLoader.reload();
++
++		const { session: protectedSession } = await createAgentSession({
++			cwd: "/required-handler-test",
++			agentDir: "/virtual/required-handler-test",
++			model: provider.getModel(),
++			thinkingLevel: "off",
++			modelRuntime,
++			resourceLoader: protectedLoader,
++			sessionManager,
++			settingsManager,
++			noTools: "all",
++		});
++
++		try {
++			await protectedSession.bindExtensions({});
++			expect(
++				sessionManager
++					.getEntries()
++					.some((entry) => entry.type === "custom" && entry.customType === REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE),
++			).toBe(true);
++			expect(getRequiredContextHandler(sessionManager.getEntries())).toEqual({
++				handler: "astra-remote",
++				version: 1,
++			});
++			await protectedSession.prompt("first request");
++			expect(contextCalls).toBe(1);
++			expect(provider.state.callCount).toBe(0);
++			expect(protectedSession.state.messages.at(-1)).toMatchObject({
++				role: "assistant",
++				stopReason: "error",
++				errorMessage: expect.stringContaining("simulated final projection mutation"),
++			});
++			protectedSession.dispose();
++
++			const unprotectedLoader = new DefaultResourceLoader({
++				cwd: "/required-handler-test",
++				agentDir: "/virtual/required-handler-test",
++				settingsManager,
++				noExtensions: true,
++				noSkills: true,
++				noPromptTemplates: true,
++				noThemes: true,
++				noContextFiles: true,
++				systemPrompt: "test",
++				appendSystemPrompt: [],
++			});
++			await unprotectedLoader.reload();
++			const { session: unprotectedSession } = await createAgentSession({
++				cwd: "/required-handler-test",
++				agentDir: "/virtual/required-handler-test",
++				model: provider.getModel(),
++				thinkingLevel: "off",
++				modelRuntime,
++				resourceLoader: unprotectedLoader,
++				sessionManager,
++				settingsManager,
++				noTools: "all",
++			});
++			try {
++				await unprotectedSession.bindExtensions({});
++				unprotectedSession.agent.streamFunction = async () => {
++					throw new Error("unguarded stream should not run");
++				};
++				await expect(unprotectedSession.prompt("second request")).rejects.toThrow(
++					'Required context handler "astra-remote" version 1 is not active',
++				);
++				expect(provider.state.callCount).toBe(0);
++			} finally {
++				unprotectedSession.dispose();
++			}
++		} finally {
++			protectedSession.dispose();
++			modelRuntime.unregisterProvider(provider.provider.id);
++		}
++	},
++);
+diff --git a/packages/coding-agent/test/astra-extension-lifecycle.test.ts b/packages/coding-agent/test/astra-extension-lifecycle.test.ts
+new file mode 100644
+index 000000000..b4db10d04
+--- /dev/null
++++ b/packages/coding-agent/test/astra-extension-lifecycle.test.ts
+@@ -0,0 +1,396 @@
++import { mkdtemp, rm } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { dirname, join } from "node:path";
++import { zstdDecompressSync } from "node:zlib";
++import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
++import { afterEach, expect, test, vi } from "vitest";
++import type { AgentSession } from "../src/index.ts";
++import {
++	createAgentSession,
++	DefaultResourceLoader,
++	ModelRuntime,
++	SessionManager,
++	SettingsManager,
++} from "../src/index.ts";
++
++const extensionPath = process.env.ASTRA_EXTENSION_PATH;
++const ACCOUNT_ID = "astra-lifecycle-account";
++
++function sse(events: readonly Record<string, unknown>[]): Response {
++	return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), {
++		headers: { "content-type": "text/event-stream" },
++	});
++}
++
++function completedText(text: string): Response {
++	const item = {
++		type: "message",
++		id: `message-${text}`,
++		role: "assistant",
++		status: "completed",
++		content: [{ type: "output_text", text }],
++	};
++	return sse([
++		{ type: "response.output_item.added", item: { ...item, status: "in_progress", content: [] } },
++		{ type: "response.content_part.added", part: { type: "output_text", text: "" } },
++		{ type: "response.output_text.delta", delta: text },
++		{ type: "response.output_item.done", item },
++		{
++			type: "response.completed",
++			response: {
++				status: "completed",
++				usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12, input_tokens_details: { cached_tokens: 0 } },
++			},
++		},
++	]);
++}
++
++function newContextToolCall(): Response {
++	const item = {
++		type: "function_call",
++		id: "new-context-call",
++		call_id: "new-context-call",
++		name: "new_context",
++		arguments: "{}",
++	};
++	return sse([
++		{ type: "response.output_item.added", item: { ...item, arguments: "" } },
++		{ type: "response.function_call_arguments.done", arguments: "{}" },
++		{ type: "response.output_item.done", item },
++		{
++			type: "response.completed",
++			response: {
++				status: "completed",
++				usage: {
++					input_tokens: 105,
++					output_tokens: 2,
++					total_tokens: 107,
++					input_tokens_details: { cached_tokens: 0 },
++				},
++			},
++		},
++	]);
++}
++
++afterEach(() => {
++	vi.unstubAllGlobals();
++	vi.unstubAllEnvs();
++});
++
++test.skipIf(!extensionPath)(
++	"keeps ordinary compaction until selection activates Astra without dropping prior input",
++	async () => {
++		if (!extensionPath) throw new Error("ASTRA_EXTENSION_PATH must select the actual extension entrypoint");
++		const directory = await mkdtemp(join(tmpdir(), "astra-ordinary-"));
++		const defaultExtensionPath = join(dirname(dirname(extensionPath)), "index.ts");
++		const requests: Array<{ readonly headers: Headers; readonly payload: Record<string, unknown> }> = [];
++		let session: AgentSession | undefined;
++		try {
++			const credentials = new InMemoryCredentialStore();
++			const claims = Buffer.from(
++				JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: ACCOUNT_ID } }),
++			).toString("base64url");
++			await credentials.modify("openai-codex", async () => ({
++				type: "oauth",
++				access: `offline.${claims}.signature`,
++				refresh: "offline",
++				expires: Date.now() + 3_600_000,
++				accountId: ACCOUNT_ID,
++			}));
++			vi.stubGlobal("fetch", async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
++				const body = init?.body;
++				const text =
++					typeof body === "string"
++						? body
++						: body instanceof Uint8Array
++							? zstdDecompressSync(body).toString("utf8")
++							: undefined;
++				if (!text) throw new Error("expected native Codex JSON request");
++				requests.push({
++					headers: new Headers(init?.headers),
++					payload: JSON.parse(text) as Record<string, unknown>,
++				});
++				return completedText("ordinary response");
++			});
++			const modelRuntime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
++			const model = modelRuntime.getModels("openai-codex").find((candidate) => candidate.id === "gpt-5.6-terra");
++			if (!model) throw new Error("test requires a pinned ordinary Codex model");
++			const settingsManager = SettingsManager.inMemory({
++				transport: "sse",
++				compaction: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 1 },
++				retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 },
++			});
++			const resourceLoader = new DefaultResourceLoader({
++				cwd: directory,
++				agentDir: join(directory, "agent"),
++				settingsManager,
++				additionalExtensionPaths: [defaultExtensionPath, extensionPath],
++				noExtensions: true,
++				noSkills: true,
++				noPromptTemplates: true,
++				noThemes: true,
++				noContextFiles: true,
++				systemPrompt: "Offline ordinary fixture.",
++				appendSystemPrompt: [],
++			});
++			await resourceLoader.reload();
++			expect(resourceLoader.getExtensions().errors).toEqual([]);
++			const sessionManager = SessionManager.inMemory(directory);
++			({ session } = await createAgentSession({
++				cwd: directory,
++				agentDir: join(directory, "agent"),
++				model,
++				thinkingLevel: "off",
++				modelRuntime,
++				resourceLoader,
++				sessionManager,
++				settingsManager,
++				noTools: "builtin",
++			}));
++			await session.bindExtensions({});
++			expect(session.getActiveToolNames()).not.toEqual(
++				expect.arrayContaining(["history", "notes", "new_context", "get_context_remaining"]),
++			);
++			await session.prompt("ordinary request");
++			await session.waitForIdle();
++			expect(requests).toHaveLength(1);
++			expect(requests[0]?.headers.get("x-codex-window-id")).toBeNull();
++			const compaction = await session.compact();
++			expect(compaction.details).not.toMatchObject({ strategy: "astra-remote-window" });
++			expect(requests).toHaveLength(2);
++			expect(requests[1]?.headers.get("x-codex-window-id")).toBeNull();
++			const astraModel = modelRuntime.getModels("openai-codex").find((candidate) => candidate.id === "gpt-6-astra");
++			if (!astraModel) throw new Error("test requires the pinned host's built-in Astra subscription model");
++			await credentials.modify("openai-codex", async () => ({
++				type: "oauth",
++				access: `offline.${claims}.signature`,
++				refresh: "offline",
++				expires: Date.now() + 3_600_000,
++				accountId: "mismatched-account",
++			}));
++			expect(await modelRuntime.checkAuth("openai-codex")).toMatchObject({ type: "oauth", source: "OAuth" });
++			await expect(session.setModel(astraModel)).rejects.toThrow("does not match authenticated token");
++			expect(session.model?.id).toBe(model.id);
++			expect(
++				sessionManager
++					.getEntries()
++					.some((entry) => entry.type === "custom" && entry.customType === "pi.required-context-handler"),
++			).toBe(false);
++			expect(
++				sessionManager
++					.getEntries()
++					.some((entry) => entry.type === "model_change" && entry.modelId === astraModel.id),
++			).toBe(false);
++			expect(requests).toHaveLength(2);
++			await credentials.modify("openai-codex", async () => ({
++				type: "oauth",
++				access: `offline.${claims}.signature`,
++				refresh: "offline",
++				expires: Date.now() + 3_600_000,
++			}));
++			await session.setModel(astraModel);
++			expect(session.getActiveToolNames()).toEqual(
++				expect.arrayContaining(["history", "notes", "new_context", "get_context_remaining"]),
++			);
++			await session.prompt("continue after selecting Astra");
++			await session.waitForIdle();
++			expect(requests).toHaveLength(3);
++			expect(requests[2]?.headers.get("x-codex-window-id")).not.toBeNull();
++			expect(JSON.stringify(requests[2]?.payload["input"])).toContain("ordinary response");
++			await session.setModel(model);
++			await expect(session.prompt("attempt ordinary continuation after protected Astra state")).rejects.toThrow(
++				"openai-codex/gpt-6-astra",
++			);
++			expect(requests).toHaveLength(3);
++		} finally {
++			session?.dispose();
++			await rm(directory, { recursive: true, force: true });
++		}
++	},
++);
++
++test.skipIf(!extensionPath)(
++	"commits and projects a new_context tool boundary before its post-tool native continuation",
++	async () => {
++		if (!extensionPath) throw new Error("ASTRA_EXTENSION_PATH must select the actual extension entrypoint");
++		vi.stubEnv("PI_ASTRA_REMOTE_CONTEXT", undefined);
++		vi.stubEnv("PI_OFFLINE", "1");
++		const directory = await mkdtemp(join(tmpdir(), "astra-lifecycle-"));
++		const defaultExtensionPath = join(dirname(dirname(extensionPath)), "index.ts");
++		const requests: Array<{ readonly headers: Headers; readonly payload: Record<string, unknown> }> = [];
++		let session: AgentSession | undefined;
++		try {
++			const credentials = new InMemoryCredentialStore();
++			const claims = Buffer.from(
++				JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: ACCOUNT_ID } }),
++			).toString("base64url");
++			await credentials.modify("openai-codex", async () => ({
++				type: "oauth",
++				access: `offline.${claims}.signature`,
++				refresh: "offline",
++				expires: Date.now() + 3_600_000,
++				accountId: ACCOUNT_ID,
++			}));
++			vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
++				const url = input instanceof Request ? input.url : String(input);
++				if (url !== "https://chatgpt.com/backend-api/codex/responses") throw new Error(`unexpected request ${url}`);
++				const body = init?.body;
++				const text =
++					typeof body === "string"
++						? body
++						: body instanceof Uint8Array
++							? zstdDecompressSync(body).toString("utf8")
++							: undefined;
++				if (!text) throw new Error("expected native Codex JSON request");
++				requests.push({
++					headers: new Headers(init?.headers),
++					payload: JSON.parse(text) as Record<string, unknown>,
++				});
++				return requests.length === 1
++					? newContextToolCall()
++					: completedText("continued after durable new_context boundary");
++			});
++			const modelRuntime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
++			const model = modelRuntime.getModels("openai-codex").find((candidate) => candidate.id === "gpt-6-astra");
++			if (!model) throw new Error("test requires the pinned host's built-in Astra subscription model");
++			const settingsManager = SettingsManager.inMemory({
++				transport: "sse",
++				compaction: { enabled: true, reserveTokens: model.contextWindow - 100, keepRecentTokens: 1 },
++				retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 },
++			});
++			const resourceLoader = new DefaultResourceLoader({
++				cwd: directory,
++				agentDir: join(directory, "agent"),
++				settingsManager,
++				additionalExtensionPaths: [defaultExtensionPath, extensionPath],
++				noExtensions: true,
++				noSkills: true,
++				noPromptTemplates: true,
++				noThemes: true,
++				noContextFiles: true,
++				systemPrompt: "Offline Astra lifecycle fixture.",
++				appendSystemPrompt: [],
++			});
++			await resourceLoader.reload();
++			expect(resourceLoader.getExtensions().errors).toEqual([]);
++			const sessionManager = SessionManager.create(directory, join(directory, "sessions"));
++			({ session } = await createAgentSession({
++				cwd: directory,
++				agentDir: join(directory, "agent"),
++				model,
++				thinkingLevel: "off",
++				modelRuntime,
++				resourceLoader,
++				sessionManager,
++				settingsManager,
++				noTools: "builtin",
++			}));
++			await session.bindExtensions({});
++			await session.prompt("start a task then use the remote window tool");
++			await session.waitForIdle();
++			expect(requests).toHaveLength(2);
++			const [initial, continuation] = requests;
++			if (!initial || !continuation) throw new Error("expected tool call and post-tool continuation");
++			expect(continuation.headers.get("x-codex-window-id")).not.toBe(initial.headers.get("x-codex-window-id"));
++			expect(continuation.payload["client_metadata"]).toMatchObject({
++				"x-codex-window-id": continuation.headers.get("x-codex-window-id"),
++			});
++			expect(
++				sessionManager
++					.getEntries()
++					.filter(
++						(entry) => entry.type === "custom_message" && entry.customType === "astra-remote-context-window",
++					),
++			).toHaveLength(2);
++			expect(
++				sessionManager
++					.getEntries()
++					.some((entry) => entry.type === "message" && entry.message.role === "toolResult"),
++			).toBe(true);
++			expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toMatchObject([
++				{ details: { window: { windowNumber: 2 } } },
++			]);
++			await session.prompt("continue after automatic remote rollover");
++			await session.waitForIdle();
++			expect(requests).toHaveLength(3);
++			const afterAutomaticCompaction = requests[2];
++			if (!afterAutomaticCompaction) throw new Error("expected request after automatic rollover");
++			expect(afterAutomaticCompaction.headers.get("x-codex-window-id")).toBe(
++				continuation.headers.get("x-codex-window-id"),
++			);
++			const latestCompaction = sessionManager
++				.getEntries()
++				.filter((entry) => entry.type === "compaction")
++				.at(-1);
++			if (
++				!latestCompaction ||
++				!latestCompaction.details ||
++				typeof latestCompaction.details !== "object" ||
++				!("window" in latestCompaction.details)
++			) {
++				throw new Error("expected persisted Astra compaction details");
++			}
++			const latestWindow = latestCompaction.details.window;
++			if (
++				!latestWindow ||
++				typeof latestWindow !== "object" ||
++				!("windowNumber" in latestWindow) ||
++				typeof latestWindow.windowNumber !== "number"
++			) {
++				throw new Error("expected persisted Astra window number");
++			}
++			const sessionFile = sessionManager.getSessionFile();
++			if (!sessionFile) throw new Error("expected persisted canonical JSONL session");
++			session.dispose();
++			session = undefined;
++			const restartedManager = SessionManager.open(sessionFile, join(directory, "sessions"), directory);
++			const restartedRuntime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
++			const restartedModel = restartedRuntime
++				.getModels("openai-codex")
++				.find((candidate) => candidate.id === model.id);
++			if (!restartedModel) throw new Error("restart requires the original Codex model");
++			const restartedSettings = SettingsManager.inMemory({
++				transport: "sse",
++				compaction: { enabled: true, reserveTokens: restartedModel.contextWindow - 100, keepRecentTokens: 1 },
++				retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 },
++			});
++			const restartedLoader = new DefaultResourceLoader({
++				cwd: directory,
++				agentDir: join(directory, "agent"),
++				settingsManager: restartedSettings,
++				additionalExtensionPaths: [defaultExtensionPath, extensionPath],
++				noExtensions: true,
++				noSkills: true,
++				noPromptTemplates: true,
++				noThemes: true,
++				noContextFiles: true,
++				systemPrompt: "Offline Astra lifecycle fixture.",
++				appendSystemPrompt: [],
++			});
++			await restartedLoader.reload();
++			({ session } = await createAgentSession({
++				cwd: directory,
++				agentDir: join(directory, "agent"),
++				model: restartedModel,
++				thinkingLevel: "off",
++				modelRuntime: restartedRuntime,
++				resourceLoader: restartedLoader,
++				sessionManager: restartedManager,
++				settingsManager: restartedSettings,
++				noTools: "builtin",
++			}));
++			await session.bindExtensions({});
++			await session.prompt("continue after restart from the committed rollover");
++			await session.waitForIdle();
++			expect(requests).toHaveLength(4);
++			const afterRestart = requests[3];
++			if (!afterRestart) throw new Error("expected request after restart");
++			expect(afterRestart.headers.get("x-codex-window-id")).toBe(
++				`${sessionManager.getSessionId()}:${latestWindow.windowNumber}`,
++			);
++		} finally {
++			session?.dispose();
++			await rm(directory, { recursive: true, force: true });
++		}
++	},
++);
+diff --git a/packages/coding-agent/test/astra-patched-host.test.ts b/packages/coding-agent/test/astra-patched-host.test.ts
+new file mode 100644
+index 000000000..2afe82bc6
+--- /dev/null
++++ b/packages/coding-agent/test/astra-patched-host.test.ts
+@@ -0,0 +1,169 @@
++import { mkdtemp, rm } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { zstdDecompressSync } from "node:zlib";
++import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
++import { afterEach, expect, test, vi } from "vitest";
++import type { AgentSession } from "../src/index.ts";
++import {
++	createAgentSession,
++	DefaultResourceLoader,
++	ModelRuntime,
++	SessionManager,
++	SettingsManager,
++} from "../src/index.ts";
++
++// This cross-repository test is opt-in; the portable core patch does not bundle the extension.
++const extensionPath = process.env.ASTRA_EXTENSION_PATH;
++const ACCOUNT_ID = "astra-offline-account";
++const SESSION_REQUIREMENT = "pi.required-context-handler";
++
++function completedResponse(): Response {
++	const item = {
++		type: "message",
++		id: "astra-offline-message",
++		role: "assistant",
++		status: "completed",
++		content: [{ type: "output_text", text: "offline response" }],
++	};
++	const events = [
++		{ type: "response.output_item.added", item: { ...item, status: "in_progress", content: [] } },
++		{ type: "response.content_part.added", part: { type: "output_text", text: "" } },
++		{ type: "response.output_text.delta", delta: "offline response" },
++		{ type: "response.output_item.done", item },
++		{
++			type: "response.completed",
++			response: {
++				status: "completed",
++				usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12, input_tokens_details: { cached_tokens: 0 } },
++			},
++		},
++	];
++	return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), {
++		headers: { "content-type": "text/event-stream" },
++	});
++}
++
++afterEach(() => {
++	vi.unstubAllGlobals();
++	vi.unstubAllEnvs();
++});
++
++test.skipIf(!extensionPath)(
++	"loads the real Astra extension and sends native Codex window metadata with host OAuth",
++	async () => {
++		if (!extensionPath) throw new Error("ASTRA_EXTENSION_PATH must select the actual extension entrypoint");
++		vi.stubEnv("PI_ASTRA_REMOTE_CONTEXT", undefined);
++		vi.stubEnv("PI_OFFLINE", "1");
++		const directory = await mkdtemp(join(tmpdir(), "astra-patched-host-"));
++		const requests: Array<{ readonly headers: Headers; readonly payload: Record<string, unknown> }> = [];
++		let session: AgentSession | undefined;
++		try {
++			const credentials = new InMemoryCredentialStore();
++			const claims = Buffer.from(
++				JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: ACCOUNT_ID } }),
++			).toString("base64url");
++			await credentials.modify("openai-codex", async () => ({
++				type: "oauth",
++				access: `offline.${claims}.signature`,
++				refresh: "offline-refresh-not-used",
++				expires: Date.now() + 3_600_000,
++				accountId: ACCOUNT_ID,
++			}));
++			vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
++				const url = input instanceof Request ? input.url : String(input);
++				if (url !== "https://chatgpt.com/backend-api/codex/responses") {
++					throw new Error(`unexpected offline-test request destination: ${url}`);
++				}
++				const encoded = init?.body;
++				const text =
++					typeof encoded === "string"
++						? encoded
++						: encoded instanceof Uint8Array
++							? zstdDecompressSync(encoded).toString("utf8")
++							: undefined;
++				if (text === undefined) throw new Error("native Codex request did not contain a JSON body");
++				requests.push({
++					headers: new Headers(init?.headers),
++					payload: JSON.parse(text) as Record<string, unknown>,
++				});
++				return completedResponse();
++			});
++			const modelRuntime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
++			const model = modelRuntime.getModels("openai-codex").find((candidate) => candidate.id === "gpt-6-astra");
++			if (!model) throw new Error("test setup requires the pinned host's built-in Astra subscription model");
++			const settingsManager = SettingsManager.inMemory({
++				transport: "sse",
++				compaction: { enabled: false, keepRecentTokens: 1 },
++				retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 },
++			});
++			const resourceLoader = new DefaultResourceLoader({
++				cwd: directory,
++				agentDir: join(directory, "agent"),
++				settingsManager,
++				additionalExtensionPaths: [extensionPath],
++				noExtensions: true,
++				noSkills: true,
++				noPromptTemplates: true,
++				noThemes: true,
++				noContextFiles: true,
++				systemPrompt: "Offline Astra integration fixture.",
++				appendSystemPrompt: [],
++			});
++			await resourceLoader.reload();
++			expect(resourceLoader.getExtensions().errors).toEqual([]);
++			const sessionManager = SessionManager.inMemory(directory);
++			({ session } = await createAgentSession({
++				cwd: directory,
++				agentDir: join(directory, "agent"),
++				model,
++				thinkingLevel: "off",
++				modelRuntime,
++				resourceLoader,
++				sessionManager,
++				settingsManager,
++				noTools: "builtin",
++			}));
++			await session.bindExtensions({});
++			expect(
++				sessionManager
++					.getEntries()
++					.some((entry) => entry.type === "custom" && entry.customType === SESSION_REQUIREMENT),
++			).toBe(true);
++			await session.prompt("retain this initial task across remote windows");
++			await session.waitForIdle();
++			expect(requests).toHaveLength(1);
++			const request = requests[0];
++			if (!request) throw new Error("expected the real provider request");
++			expect(request.headers.get("chatgpt-account-id")).toBe(ACCOUNT_ID);
++			const metadata = request.headers.get("x-codex-turn-metadata");
++			expect(metadata).not.toBeNull();
++			expect(request.payload["client_metadata"]).toMatchObject({
++				"x-codex-window-id": request.headers.get("x-codex-window-id"),
++				"x-codex-turn-metadata": metadata,
++			});
++			expect(request.payload["tools"]).toEqual(
++				expect.arrayContaining([
++					expect.objectContaining({ type: "namespace", name: "history" }),
++					expect.objectContaining({ type: "namespace", name: "notes" }),
++				]),
++			);
++
++			const firstCompaction = await session.compact();
++			expect(firstCompaction.details).toMatchObject({ window: { windowNumber: 1 } });
++			await session.prompt("continue the same task in the next window");
++			await session.waitForIdle();
++			expect(requests).toHaveLength(2);
++			const secondRequest = requests[1];
++			if (!secondRequest) throw new Error("expected continuation after committed rollover");
++			expect(secondRequest.headers.get("x-codex-window-id")).not.toBe(request.headers.get("x-codex-window-id"));
++			const secondCompaction = await session.compact();
++			expect(secondCompaction.details).toMatchObject({ window: { windowNumber: 2 } });
++			expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(2);
++			expect(requests).toHaveLength(2); // Neither compaction may invoke a summary model.
++		} finally {
++			session?.dispose();
++			await rm(directory, { recursive: true, force: true });
++		}
++	},
++);
+diff --git a/packages/coding-agent/test/astra-recovery-lifecycle.test.ts b/packages/coding-agent/test/astra-recovery-lifecycle.test.ts
+new file mode 100644
+index 000000000..ffc7feeb2
+--- /dev/null
++++ b/packages/coding-agent/test/astra-recovery-lifecycle.test.ts
+@@ -0,0 +1,1476 @@
++import assert from "node:assert/strict";
++import { randomUUID } from "node:crypto";
++import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { dirname, join } from "node:path";
++import { zstdDecompressSync } from "node:zlib";
++import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
++import { afterEach, describe, expect, test, vi } from "vitest";
++import type { AgentSession, InlineExtension } from "../src/index.ts";
++import {
++	createAgentSession,
++	DefaultResourceLoader,
++	ModelRuntime,
++	SessionManager,
++	SettingsManager,
++} from "../src/index.ts";
++
++const extensionPath = process.env.ASTRA_EXTENSION_PATH;
++const RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
++const ACCOUNT_ID = "astra-recovery-test-account";
++const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
++const directories: string[] = [];
++const sessions: AgentSession[] = [];
++
++interface CapturedRequest {
++	readonly url: string;
++	readonly headers: Headers;
++	readonly payload: unknown;
++	readonly signal: AbortSignal | null | undefined;
++}
++
++type Reply = (request: CapturedRequest) => Response | Promise<Response>;
++
++function createGate(): { readonly promise: Promise<void>; readonly resolve: () => void } {
++	let release: (() => void) | undefined;
++	const promise = new Promise<void>((resolve) => {
++		release = resolve;
++	});
++	assert(release);
++	return { promise, resolve: release };
++}
++
++interface ControlledWebSocket {
++	readonly headers: Readonly<Record<string, string>>;
++	open(): void;
++	complete(responseId: string): void;
++}
++
++function createControlledWebSockets(onConnection?: (socket: ControlledWebSocket) => void): {
++	readonly WebSocket: {
++		readonly OPEN: number;
++		new (url: string, protocols?: string | string[] | { headers?: Record<string, string> }): ControlledWebSocket;
++	};
++	readonly connections: ControlledWebSocket[];
++	readonly sends: () => number;
++	readonly closes: () => number;
++} {
++	const connections: ControlledWebSocket[] = [];
++	let sends = 0;
++	let closes = 0;
++	class MockWebSocket implements ControlledWebSocket {
++		static OPEN = 1;
++		readyState = MockWebSocket.OPEN;
++		readonly headers: Readonly<Record<string, string>>;
++		private listeners = new Map<string, Set<(event: unknown) => void>>();
++
++		constructor(_url: string, protocols?: string | string[] | { headers?: Record<string, string> }) {
++			this.headers =
++				protocols && typeof protocols === "object" && !Array.isArray(protocols) ? (protocols.headers ?? {}) : {};
++			connections.push(this);
++			onConnection?.(this);
++		}
++
++		addEventListener(type: string, listener: (event: unknown) => void): void {
++			let listeners = this.listeners.get(type);
++			if (!listeners) {
++				listeners = new Set();
++				this.listeners.set(type, listeners);
++			}
++			listeners.add(listener);
++		}
++
++		removeEventListener(type: string, listener: (event: unknown) => void): void {
++			this.listeners.get(type)?.delete(listener);
++		}
++
++		send(): void {
++			sends++;
++			queueMicrotask(() => this.complete("controlled-websocket-response"));
++		}
++
++		close(): void {
++			closes++;
++			this.readyState = 3;
++		}
++
++		open(): void {
++			this.dispatch("open", {});
++		}
++
++		complete(responseId: string): void {
++			this.dispatch("message", {
++				data: JSON.stringify({
++					type: "response.completed",
++					response: {
++						id: responseId,
++						status: "completed",
++						usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
++					},
++				}),
++			});
++		}
++
++		private dispatch(type: string, event: unknown): void {
++			for (const listener of this.listeners.get(type) ?? []) listener(event);
++		}
++	}
++	return { WebSocket: MockWebSocket, connections, sends: () => sends, closes: () => closes };
++}
++
++function isRecord(value: unknown): value is Record<string, unknown> {
++	return value !== null && typeof value === "object" && !Array.isArray(value);
++}
++
++function inputItems(request: CapturedRequest): Record<string, unknown>[] {
++	assert(isRecord(request.payload));
++	assert(Array.isArray(request.payload.input));
++	assert(request.payload.input.every(isRecord));
++	return request.payload.input;
++}
++
++function sse(items: readonly Record<string, unknown>[]): Response {
++	const events: Record<string, unknown>[] = [];
++	for (const [outputIndex, item] of items.entries()) {
++		events.push({ type: "response.output_item.added", output_index: outputIndex, item });
++		if (item.type === "function_call") {
++			events.push({ type: "response.function_call_arguments.done", arguments: item.arguments });
++		}
++		events.push({ type: "response.output_item.done", output_index: outputIndex, item });
++	}
++	events.push({
++		type: "response.completed",
++		response: {
++			status: "completed",
++			usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12, input_tokens_details: { cached_tokens: 0 } },
++		},
++	});
++	return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), {
++		headers: { "content-type": "text/event-stream" },
++	});
++}
++
++function textResponse(): Response {
++	return sse([
++		{
++			type: "message",
++			id: "recovered-message",
++			role: "assistant",
++			status: "completed",
++			content: [{ type: "output_text", text: "recovered task" }],
++		},
++	]);
++}
++
++function toolCall(
++	id: string,
++	name: string,
++	arguments_: Record<string, unknown>,
++	namespace?: string,
++): Record<string, unknown> {
++	return {
++		type: "function_call",
++		id: `fc_${id}`,
++		call_id: id,
++		name,
++		arguments: JSON.stringify(arguments_),
++		...(namespace ? { namespace } : {}),
++	};
++}
++
++async function fixture(
++	reply: Reply,
++	extensionFactories: InlineExtension[] = [],
++	options: {
++		readonly sessionFile?: string;
++		readonly bind?: boolean;
++		readonly modelId?: string;
++		readonly allowExtensionErrors?: boolean;
++		readonly conflictingHistory?: boolean;
++		readonly foreignRecoveryTools?: boolean;
++	} = {},
++): Promise<{
++	readonly cwd: string;
++	readonly session: AgentSession;
++	readonly manager: SessionManager;
++	readonly runtime: ModelRuntime;
++	readonly credentials: InMemoryCredentialStore;
++	readonly requests: CapturedRequest[];
++	readonly errors: unknown[];
++}> {
++	assert(extensionPath, "ASTRA_EXTENSION_PATH must select the real extension");
++	vi.stubEnv("PI_OFFLINE", "1");
++	vi.stubEnv("PI_ASTRA_REMOTE_CONTEXT", undefined);
++	const cwd = await mkdtemp(join(tmpdir(), "astra-recovery-"));
++	directories.push(cwd);
++	const requests: CapturedRequest[] = [];
++	vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
++		const url = input instanceof Request ? input.url : String(input);
++		assert(url.startsWith("https://chatgpt.com/backend-api/codex/"), "unexpected offline request destination");
++		const body = init?.body;
++		assert(typeof body === "string" || body instanceof Uint8Array);
++		const payload: unknown = JSON.parse(typeof body === "string" ? body : zstdDecompressSync(body).toString("utf8"));
++		const request = { url, headers: new Headers(init?.headers), payload, signal: init?.signal };
++		requests.push(request);
++		return reply(request);
++	});
++	const credentials = new InMemoryCredentialStore();
++	const claims = Buffer.from(
++		JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: ACCOUNT_ID } }),
++	).toString("base64url");
++	await credentials.modify("openai-codex", async () => ({
++		type: "oauth",
++		access: `offline.${claims}.signature`,
++		refresh: "unused",
++		expires: Date.now() + 3_600_000,
++	}));
++	const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
++	const model = runtime
++		.getModels("openai-codex")
++		.find((candidate) => candidate.id === (options.modelId ?? "gpt-6-astra"));
++	assert(model, "missing pinned native Astra model");
++	const settingsManager = SettingsManager.inMemory({
++		transport: "sse",
++		compaction: { enabled: false, keepRecentTokens: 1 },
++		retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 },
++	});
++	const conflictingHistoryPath = join(cwd, "conflicting-history.ts");
++	const foreignRecoveryToolsPath = join(cwd, "foreign-recovery-tools.ts");
++	if (options.conflictingHistory) {
++		await writeFile(
++			conflictingHistoryPath,
++			`import { Type } from "typebox";
++export default function(pi) {
++	pi.registerTool({
++		name: "history",
++		label: "history",
++		description: "conflicting history tool",
++		parameters: Type.Object({}),
++		execute() { return { content: [{ type: "text", text: "wrong owner" }] }; },
++	});
++}`,
++		);
++	}
++	if (options.foreignRecoveryTools) {
++		await writeFile(
++			foreignRecoveryToolsPath,
++			`import { Type } from "typebox";
++export default function(pi) {
++	for (const name of ["history", "notes", "new_context", "get_context_remaining"]) {
++		pi.registerTool({
++			name,
++			label: name,
++			description: "foreign recovery tool",
++			parameters: Type.Object({}),
++			execute() { return { content: [{ type: "text", text: "foreign owner" }] }; },
++		});
++	}
++}`,
++		);
++	}
++	const resourceLoader = new DefaultResourceLoader({
++		cwd,
++		agentDir: join(cwd, "agent"),
++		settingsManager,
++		extensionFactories,
++		additionalExtensionPaths: [
++			...(options.conflictingHistory ? [conflictingHistoryPath] : []),
++			...(options.foreignRecoveryTools ? [foreignRecoveryToolsPath] : []),
++			join(dirname(dirname(extensionPath)), "index.ts"),
++			extensionPath,
++		],
++		noExtensions: true,
++		noSkills: true,
++		noPromptTemplates: true,
++		noThemes: true,
++		noContextFiles: true,
++		systemPrompt: "Offline recovery lifecycle fixture.",
++		appendSystemPrompt: [],
++	});
++	await resourceLoader.reload();
++	if (!options.allowExtensionErrors) expect(resourceLoader.getExtensions().errors).toEqual([]);
++	const manager = options.sessionFile
++		? SessionManager.open(options.sessionFile, join(cwd, "sessions"), cwd)
++		: SessionManager.create(cwd, join(cwd, "sessions"));
++	const { session } = await createAgentSession({
++		cwd,
++		agentDir: join(cwd, "agent"),
++		model,
++		modelRuntime: runtime,
++		resourceLoader,
++		settingsManager,
++		sessionManager: manager,
++		thinkingLevel: "off",
++		noTools: "builtin",
++	});
++	sessions.push(session);
++	const errors: unknown[] = [];
++	if (options.bind !== false)
++		await session.bindExtensions({
++			onError: (error) => {
++				errors.push(error);
++			},
++		});
++	return { cwd, session, manager, runtime, credentials, requests, errors };
++}
++
++afterEach(async () => {
++	for (const session of sessions.splice(0)) session.dispose();
++	for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
++	vi.unstubAllGlobals();
++	vi.unstubAllEnvs();
++});
++
++describe.skipIf(!extensionPath)("Astra real recovery boundaries", () => {
++	test("cannot dispatch after failed startup until activation succeeds explicitly", async () => {
++		const current = await fixture(() => textResponse(), [], { bind: false });
++		const credential = await current.credentials.read("openai-codex");
++		assert(credential?.type === "oauth");
++		await current.credentials.modify("openai-codex", async () => ({
++			...credential,
++			accountId: "wrong-stored-account",
++		}));
++		await expect(current.session.bindExtensions({})).rejects.toThrow("does not match authenticated token");
++		await current.credentials.modify("openai-codex", async () => credential);
++		await expect(current.session.prompt("must not bypass failed activation")).rejects.toThrow();
++		expect(current.requests).toHaveLength(0);
++		expect(
++			current.manager
++				.getEntries()
++				.some((entry) => entry.type === "custom" && entry.customType === "pi.required-context-handler"),
++		).toBe(false);
++		await current.session.bindExtensions({});
++		await current.session.prompt("continue after successful activation");
++		expect(current.requests).toHaveLength(1);
++	});
++
++	test.each(["unregister", "override"] as const)(
++		"rejects public provider %s after Astra activation before dispatch",
++		async (mutation) => {
++			const current = await fixture(() => textResponse());
++			if (mutation === "unregister") {
++				current.runtime.unregisterProvider("openai-codex");
++			} else {
++				const active = current.runtime.getProvider("openai-codex");
++				assert(active);
++				current.runtime.registerNativeProvider({ ...active });
++			}
++
++			await expect(current.session.prompt(`reject ${mutation} provider`)).rejects.toThrow(
++				"Astra remote context requires its live native provider wrapper",
++			);
++			expect(current.requests).toHaveLength(0);
++		},
++	);
++
++	test("rejects a conflicting effective history tool during Astra activation", async () => {
++		const current = await fixture(() => textResponse(), [], {
++			allowExtensionErrors: true,
++			conflictingHistory: true,
++			bind: false,
++		});
++
++		await expect(current.session.bindExtensions({})).rejects.toThrow(
++			"Astra remote context requires its active recovery tool definitions",
++		);
++		expect(current.requests).toHaveLength(0);
++	});
++
++	test("rejects four coherent foreign recovery tools during Astra activation", async () => {
++		const current = await fixture(() => textResponse(), [], {
++			allowExtensionErrors: true,
++			foreignRecoveryTools: true,
++			bind: false,
++		});
++
++		await expect(current.session.bindExtensions({})).rejects.toThrow(
++			"Astra remote context requires its active recovery tool definitions",
++		);
++		expect(current.requests).toHaveLength(0);
++	});
++
++	test("releases its provider on direct disposal across shared-runtime ordinary-Astra-ordinary sessions", async () => {
++		const current = await fixture(() => textResponse(), [], { modelId: "gpt-5.6-terra" });
++		const ordinaryModel = current.runtime.getModels("openai-codex").find((model) => model.id === "gpt-5.6-terra");
++		const astraModel = current.runtime.getModels("openai-codex").find((model) => model.id === "gpt-6-astra");
++		assert(ordinaryModel);
++		assert(astraModel);
++		await current.session.prompt("ordinary request before Astra activation");
++		await current.session.setModel(astraModel);
++		await current.session.prompt("Astra request before direct disposal");
++		current.session.dispose();
++
++		const settingsManager = SettingsManager.inMemory({
++			transport: "sse",
++			retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 },
++		});
++		const resourceLoader = new DefaultResourceLoader({
++			cwd: current.cwd,
++			agentDir: join(current.cwd, "agent"),
++			settingsManager,
++			additionalExtensionPaths: [join(dirname(dirname(extensionPath!)), "index.ts"), extensionPath!],
++			noExtensions: true,
++			noSkills: true,
++			noPromptTemplates: true,
++			noThemes: true,
++			noContextFiles: true,
++			systemPrompt: "ordinary reused runtime fixture.",
++			appendSystemPrompt: [],
++		});
++		await resourceLoader.reload();
++		const { session } = await createAgentSession({
++			cwd: current.cwd,
++			agentDir: join(current.cwd, "agent"),
++			model: ordinaryModel,
++			modelRuntime: current.runtime,
++			resourceLoader,
++			settingsManager,
++			sessionManager: SessionManager.inMemory(current.cwd),
++			thinkingLevel: "off",
++			noTools: "builtin",
++		});
++		sessions.push(session);
++		await session.bindExtensions({});
++		await session.prompt("ordinary request after direct disposal");
++		expect(current.requests).toHaveLength(3);
++	});
++
++	test("preserves another owner's provider override during Astra cleanup", async () => {
++		const current = await fixture(() => textResponse());
++		const active = current.runtime.getProvider("openai-codex");
++		assert(active);
++		const laterOwner = { ...active };
++		current.runtime.registerNativeProvider(laterOwner);
++		current.session.dispose();
++		expect(current.runtime.getProvider("openai-codex")).toBe(laterOwner);
++	});
++
++	test("allows a required session reopened on an ordinary saved model to select Astra again", async () => {
++		const initial = await fixture(() => textResponse());
++		await initial.session.prompt("persist protected state before reopening");
++		const file = initial.manager.getSessionFile();
++		assert(file);
++		initial.session.dispose();
++		const restored = await fixture(() => textResponse(), [], {
++			sessionFile: file,
++			bind: false,
++			modelId: "gpt-5.6-terra",
++		});
++		expect(
++			restored.manager
++				.getEntries()
++				.some((entry) => entry.type === "custom" && entry.customType === "pi.required-context-handler"),
++		).toBe(true);
++		expect(restored.session.model?.id).toBe("gpt-5.6-terra");
++		await expect(restored.session.bindExtensions({})).resolves.toBeUndefined();
++		expect(restored.session.getActiveToolNames()).not.toEqual(expect.arrayContaining(["history", "notes"]));
++		const astraModel = restored.runtime.getModels("openai-codex").find((model) => model.id === "gpt-6-astra");
++		assert(astraModel);
++		await restored.session.setModel(astraModel);
++		expect(restored.session.getActiveToolNames()).toEqual(expect.arrayContaining(["history", "notes"]));
++		await restored.session.prompt("continue after selecting Astra again");
++		expect(restored.requests).toHaveLength(1);
++	});
++
++	test.each(["stream", "streamSimple"] as const)(
++		"%s rejects a non-Astra model argument in a protected session",
++		async (method) => {
++			const current = await fixture(() => textResponse());
++			const ordinary = current.runtime.getModels("openai-codex").find((model) => model.id === "gpt-5.6-terra");
++			assert(ordinary);
++			const outcome = await current.runtime[method](
++				ordinary,
++				{ messages: [], tools: current.session.getAllTools() },
++				{ sessionId: current.manager.getSessionId(), transport: "sse" },
++			).result();
++			expect(current.requests).toHaveLength(0);
++			expect(outcome.stopReason).toBe("error");
++		},
++	);
++
++	describe.each(["stream", "streamSimple"] as const)("%s final identity", (method) => {
++		test("preserves native reasoning options and additive payload metadata", async () => {
++			const current = await fixture(() => textResponse());
++			const model = current.session.model;
++			assert(model);
++			await current.runtime[method](
++				model,
++				{ messages: [], tools: current.session.getAllTools() },
++				{
++					sessionId: current.manager.getSessionId(),
++					transport: "sse",
++					...(method === "stream" ? { reasoningEffort: "high" as const } : { reasoning: "high" as const }),
++					onPayload: (payload: unknown) => {
++						assert(isRecord(payload));
++						return { ...payload, client_metadata: { unrelated: "preserved" } };
++					},
++				},
++			).result();
++			expect(current.requests).toHaveLength(1);
++			expect(current.requests[0]?.payload).toMatchObject({
++				reasoning: { effort: "high" },
++				client_metadata: { unrelated: "preserved" },
++			});
++		});
++
++		test.each(["model", "leaf", "session", "window", "tools", "account", "same-account-refresh"] as const)(
++			"rechecks %s after an awaited payload hook",
++			async (change) => {
++				const current = await fixture(() => textResponse());
++				const model = current.session.model;
++				assert(model);
++				const entered = createGate();
++				const resume = createGate();
++				const finished = current.runtime[method](
++					model,
++					{ messages: [], tools: current.session.getAllTools() },
++					{
++						sessionId: current.manager.getSessionId(),
++						transport: "sse",
++						onPayload: async () => {
++							entered.resolve();
++							await resume.promise;
++						},
++					},
++				).result();
++				await entered.promise;
++				let refreshedAccess: string | undefined;
++				if (change === "model") {
++					const ordinary = current.runtime
++						.getModels("openai-codex")
++						.find((candidate) => candidate.id === "gpt-5.6-terra");
++					assert(ordinary);
++					current.session.agent.state.model = ordinary;
++				} else if (change === "leaf") {
++					current.manager.appendCustomEntry("concurrent-change", {});
++				} else if (change === "tools") {
++					current.session.setActiveToolsByName([]);
++				} else if (change === "session") {
++					current.manager.newSession();
++				} else if (change === "window") {
++					const marker = current.manager
++						.getEntries()
++						.find(
++							(entry) => entry.type === "custom_message" && entry.customType === "astra-remote-context-window",
++						);
++					assert(marker?.type === "custom_message" && isRecord(marker.details) && isRecord(marker.details.window));
++					// Keep the leaf unchanged to isolate the window-identity check from the leaf check.
++					const id = randomUUID();
++					marker.details.window.firstWindowId = id;
++					marker.details.window.currentWindowId = id;
++				} else {
++					const accountId = change === "account" ? "another-account" : ACCOUNT_ID;
++					const claims = Buffer.from(
++						JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } }),
++					).toString("base64url");
++					refreshedAccess = `offline.${claims}.refreshed-signature`;
++					await current.credentials.modify("openai-codex", async () => ({
++						type: "oauth",
++						access: refreshedAccess ?? "",
++						refresh: "unused",
++						expires: Date.now() + 3_600_000,
++					}));
++				}
++				resume.resolve();
++				const outcome = await finished;
++				if (change === "same-account-refresh") {
++					expect(current.requests).toHaveLength(1);
++					expect(current.requests[0]?.headers.get("authorization")).toBe(`Bearer ${refreshedAccess}`);
++					expect(outcome.stopReason).toBe("stop");
++				} else {
++					expect(current.requests).toHaveLength(0);
++					expect(outcome.stopReason).toBe("error");
++				}
++			},
++		);
++		test.each(["websocket", "auto", "websocket-cached"] as const)(
++			"does not dispatch after recovery ownership changes during %s WebSocket acquisition",
++			async (transport) => {
++				const current = await fixture(() => textResponse());
++				const model = current.session.model;
++				assert(model);
++				const opened = createGate();
++				let socket: MockWebSocket | undefined;
++				let connections = 0;
++				let sends = 0;
++				let closes = 0;
++
++				class MockWebSocket {
++					static OPEN = 1;
++					readyState = MockWebSocket.OPEN;
++					private listeners = new Map<string, Set<(event: unknown) => void>>();
++
++					constructor() {
++						connections++;
++						socket = this;
++						opened.resolve();
++					}
++
++					addEventListener(type: string, listener: (event: unknown) => void): void {
++						let listeners = this.listeners.get(type);
++						if (!listeners) {
++							listeners = new Set();
++							this.listeners.set(type, listeners);
++						}
++						listeners.add(listener);
++					}
++
++					removeEventListener(type: string, listener: (event: unknown) => void): void {
++						this.listeners.get(type)?.delete(listener);
++					}
++
++					send(): void {
++						sends++;
++						queueMicrotask(() =>
++							this.dispatch("message", {
++								data: JSON.stringify({
++									type: "response.completed",
++									response: {
++										id: "unexpected-stale-dispatch",
++										status: "completed",
++										usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
++									},
++								}),
++							}),
++						);
++					}
++
++					close(): void {
++						closes++;
++						this.readyState = 3;
++					}
++
++					open(): void {
++						this.dispatch("open", {});
++					}
++
++					private dispatch(type: string, event: unknown): void {
++						for (const listener of this.listeners.get(type) ?? []) listener(event);
++					}
++				}
++
++				vi.stubGlobal("WebSocket", MockWebSocket);
++				const finished = current.runtime[method](
++					model,
++					{ messages: [], tools: current.session.getAllTools() },
++					{ sessionId: current.manager.getSessionId(), transport },
++				).result();
++				await opened.promise;
++				current.session.setActiveToolsByName([]);
++				assert(socket);
++				socket.open();
++
++				const outcome = await finished;
++				expect(connections).toBe(1);
++				expect(sends).toBe(0);
++				expect(closes).toBe(1);
++				expect(current.requests).toHaveLength(0);
++				expect(outcome.stopReason).toBe("error");
++			},
++		);
++
++		test("reacquires with a same-account refreshed bearer after WebSocket acquisition", async () => {
++			const current = await fixture(() => textResponse());
++			const model = current.session.model;
++			assert(model);
++			const opened = createGate();
++			const connectedAuthorizations: Array<string | undefined> = [];
++			let socket: MockWebSocket | undefined;
++			let connections = 0;
++			let sends = 0;
++			let closes = 0;
++
++			class MockWebSocket {
++				static OPEN = 1;
++				readyState = MockWebSocket.OPEN;
++				private listeners = new Map<string, Set<(event: unknown) => void>>();
++				private readonly connection = ++connections;
++
++				constructor(_url: string, protocols?: string | string[] | { headers?: Record<string, string> }) {
++					const headers =
++						protocols && typeof protocols === "object" && !Array.isArray(protocols)
++							? protocols.headers
++							: undefined;
++					connectedAuthorizations.push(headers?.authorization);
++					if (this.connection === 1) {
++						socket = this;
++						opened.resolve();
++					} else {
++						queueMicrotask(() => this.dispatch("open", {}));
++					}
++				}
++
++				addEventListener(type: string, listener: (event: unknown) => void): void {
++					let listeners = this.listeners.get(type);
++					if (!listeners) {
++						listeners = new Set();
++						this.listeners.set(type, listeners);
++					}
++					listeners.add(listener);
++				}
++
++				removeEventListener(type: string, listener: (event: unknown) => void): void {
++					this.listeners.get(type)?.delete(listener);
++				}
++
++				send(): void {
++					sends++;
++					queueMicrotask(() =>
++						this.dispatch("message", {
++							data: JSON.stringify({
++								type: "response.completed",
++								response: {
++									id: "refreshed-bearer-dispatch",
++									status: "completed",
++									usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
++								},
++							}),
++						}),
++					);
++				}
++
++				close(): void {
++					closes++;
++					this.readyState = 3;
++				}
++
++				open(): void {
++					this.dispatch("open", {});
++				}
++
++				private dispatch(type: string, event: unknown): void {
++					for (const listener of this.listeners.get(type) ?? []) listener(event);
++				}
++			}
++
++			vi.stubGlobal("WebSocket", MockWebSocket);
++			const initial = await current.credentials.read("openai-codex");
++			assert(initial?.type === "oauth");
++			const claims = Buffer.from(
++				JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: ACCOUNT_ID } }),
++			).toString("base64url");
++			const refreshedAccess = `offline.${claims}.post-acquisition-refresh`;
++			const finished = current.runtime[method](
++				model,
++				{ messages: [], tools: current.session.getAllTools() },
++				{ sessionId: current.manager.getSessionId(), transport: "websocket-cached" },
++			).result();
++			await opened.promise;
++			await current.credentials.modify("openai-codex", async () => ({
++				...initial,
++				access: refreshedAccess,
++			}));
++			assert(socket);
++			socket.open();
++
++			const outcome = await finished;
++			expect(connectedAuthorizations).toEqual([`Bearer ${initial.access}`, `Bearer ${refreshedAccess}`]);
++			expect(closes).toBe(1);
++			expect(sends).toBe(1);
++			expect(current.requests).toHaveLength(0);
++			expect(outcome.stopReason).toBe("stop");
++		});
++
++		test("does not dispatch when aborted during post-acquisition auth", async () => {
++			const current = await fixture(() => textResponse());
++			const model = current.session.model;
++			assert(model);
++			const opened = createGate();
++			const authEntered = createGate();
++			const releaseAuth = createGate();
++			const sockets = createControlledWebSockets(() => opened.resolve());
++			const controller = new AbortController();
++			const read = current.credentials.read.bind(current.credentials);
++			let delayPostAcquisitionAuth = false;
++			vi.spyOn(current.credentials, "read").mockImplementation(async (providerId, options) => {
++				if (providerId === "openai-codex" && delayPostAcquisitionAuth) {
++					authEntered.resolve();
++					await releaseAuth.promise;
++				}
++				return read(providerId, options);
++			});
++			vi.stubGlobal("WebSocket", sockets.WebSocket);
++			const finished = current.runtime[method](
++				model,
++				{ messages: [], tools: current.session.getAllTools() },
++				{ sessionId: current.manager.getSessionId(), transport: "websocket", signal: controller.signal },
++			).result();
++			await opened.promise;
++			delayPostAcquisitionAuth = true;
++			assert(sockets.connections[0]);
++			sockets.connections[0].open();
++			await authEntered.promise;
++			controller.abort();
++			releaseAuth.resolve();
++
++			const outcome = await finished;
++			expect(sockets.connections).toHaveLength(1);
++			expect(sockets.sends()).toBe(0);
++			expect(sockets.closes()).toBe(1);
++			expect(current.requests).toHaveLength(0);
++			expect(outcome.stopReason).toBe("aborted");
++		});
++
++		test("bounds repeated post-acquisition authorization changes", async () => {
++			const current = await fixture(() => textResponse());
++			const model = current.session.model;
++			assert(model);
++			const firstOpened = createGate();
++			const secondOpened = createGate();
++			const sockets = createControlledWebSockets(() => {
++				if (sockets.connections.length === 1) firstOpened.resolve();
++				else secondOpened.resolve();
++			});
++			vi.stubGlobal("WebSocket", sockets.WebSocket);
++			const initial = await current.credentials.read("openai-codex");
++			assert(initial?.type === "oauth");
++			const claims = Buffer.from(
++				JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: ACCOUNT_ID } }),
++			).toString("base64url");
++			const refreshedAccess = `offline.${claims}.first-instability`;
++			const changedAgainAccess = `offline.${claims}.second-instability`;
++			const finished = current.runtime[method](
++				model,
++				{ messages: [], tools: current.session.getAllTools() },
++				{ sessionId: current.manager.getSessionId(), transport: "websocket-cached" },
++			).result();
++			await firstOpened.promise;
++			await current.credentials.modify("openai-codex", async () => ({ ...initial, access: refreshedAccess }));
++			assert(sockets.connections[0]);
++			sockets.connections[0].open();
++			await secondOpened.promise;
++			await current.credentials.modify("openai-codex", async () => ({ ...initial, access: changedAgainAccess }));
++			assert(sockets.connections[1]);
++			sockets.connections[1].open();
++
++			const outcome = await finished;
++			expect(sockets.connections).toHaveLength(2);
++			expect(sockets.sends()).toBe(0);
++			expect(sockets.closes()).toBe(2);
++			expect(current.requests).toHaveLength(0);
++			expect(outcome.stopReason).toBe("error");
++		});
++	});
++
++	test("rejects a canonical leaf change while native request authentication/header hooks await", async () => {
++		const entered = createGate();
++		const resume = createGate();
++		const current = await fixture(
++			() => textResponse(),
++			[
++				(pi) => {
++					pi.on("before_provider_headers", async () => {
++						entered.resolve();
++						await resume.promise;
++					});
++				},
++			],
++		);
++		const running = current.session.prompt("the original request snapshot");
++		await entered.promise;
++		current.manager.appendCustomEntry("concurrent-canonical-change", {});
++		resume.resolve();
++		await running;
++		expect(current.requests).toHaveLength(0);
++		expect(current.session.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "error" });
++	});
++
++	test.each(["stream", "streamSimple"] as const)(
++		"%s rechecks identity before retrying a transient transport failure",
++		async (method) => {
++			const current = await fixture(() =>
++				Response.json({ error: "transient" }, { status: 503, headers: { "retry-after": "0" } }),
++			);
++			const model = current.session.model;
++			assert(model);
++			const outcome = await current.runtime[method](
++				model,
++				{ messages: [], tools: current.session.getAllTools() },
++				{
++					sessionId: current.manager.getSessionId(),
++					transport: "sse",
++					maxRetries: 1,
++					onResponse: async () => {
++						current.manager.appendCustomEntry("changed-before-retry", {});
++					},
++				},
++			).result();
++			expect(current.requests).toHaveLength(1);
++			expect(outcome.stopReason).toBe("error");
++		},
++	);
++
++	test.each(["guidance", "identity"] as const)("rejects a final context hook replacing window %s", async (field) => {
++		const current = await fixture(
++			() => textResponse(),
++			[
++				(pi) => {
++					pi.on("context", (event) => ({
++						messages: event.messages.map((message) =>
++							message.role === "custom" && message.customType === "astra-remote-context-window"
++								? { ...message, ...(field === "guidance" ? { content: "forged guidance" } : { details: {} }) }
++								: message,
++						),
++					}));
++				},
++			],
++		);
++		await current.session.prompt("retain the authentic window guidance");
++		expect(current.requests).toHaveLength(0);
++		expect(current.session.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "error" });
++	});
++
++	test("allows additive context from another extension without losing the protected task", async () => {
++		const current = await fixture(
++			() => textResponse(),
++			[
++				(pi) => {
++					pi.on("context", (event) => ({
++						messages: [
++							...event.messages,
++							{
++								role: "custom",
++								customType: "other-guidance",
++								content: "additional guidance",
++								display: false,
++								timestamp: 0,
++							},
++						],
++					}));
++				},
++			],
++		);
++		await current.session.prompt("retain this protected task too");
++		expect(current.requests).toHaveLength(1);
++		expect(JSON.stringify(current.requests[0]?.payload)).toContain("retain this protected task too");
++		expect(JSON.stringify(current.requests[0]?.payload)).toContain("additional guidance");
++		expect(current.errors).toEqual([]);
++	});
++
++	test.each(["input", "model"] as const)("rejects a final native payload hook replacing %s", async (field) => {
++		const current = await fixture(
++			() => textResponse(),
++			[
++				(pi) => {
++					pi.on("before_provider_request", (event) => {
++						assert(isRecord(event.payload));
++						return { ...event.payload, [field]: field === "input" ? [] : "gpt-5.6-terra" };
++					});
++				},
++			],
++		);
++		await current.session.prompt("preserve the final native request context");
++		expect(current.requests).toHaveLength(0);
++		expect(current.session.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "error" });
++	});
++
++	test("rejects a later context hook deleting the user task without fetching", async () => {
++		const current = await fixture(
++			() => textResponse(),
++			[
++				(pi) => {
++					pi.on("context", (event) => ({ messages: event.messages.filter((message) => message.role !== "user") }));
++				},
++			],
++		);
++		await current.session.prompt("the task that must survive all context hooks");
++		expect(current.requests).toHaveLength(0);
++		expect(current.session.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "error" });
++	});
++
++	test("rejects a later hook replacing a paired result with a prefix-matching id", async () => {
++		let generation = 0;
++		const current = await fixture(
++			(request) =>
++				request.url === RESPONSES_URL
++					? generation++ === 0
++						? sse([toolCall("paired", "read_item", { item_id: "item", window_id: "prior" }, "history")])
++						: textResponse()
++					: Response.json({ encrypted_output: "paired-recovery" }),
++			[
++				(pi) => {
++					pi.on("context", (event) => ({
++						messages: event.messages.map((message) =>
++							message.role === "toolResult"
++								? { ...message, toolCallId: `${message.toolCallId}-wrong` }
++								: message,
++						),
++					}));
++				},
++			],
++		);
++		await current.session.prompt("keep exact call/result identity");
++		expect(current.requests.filter((request) => request.url === RESPONSES_URL)).toHaveLength(1);
++		expect(current.session.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "error" });
++	});
++
++	test.each(["native-fallback", "missing-tail", "changed-tail", "reused-window", "plaintext"] as const)(
++		"cannot replace a prepared Astra compaction with %s",
++		async (replacement) => {
++			const current = await fixture(
++				() => textResponse(),
++				[
++					(pi) => {
++						pi.on("session_before_compact", (event, ctx) => {
++							if (replacement === "native-fallback") return { cancel: false };
++							const marker = ctx.sessionManager
++								.getBranch()
++								.find(
++									(entry) =>
++										entry.type === "custom_message" && entry.customType === "astra-remote-context-window",
++								);
++							assert(
++								marker?.type === "custom_message" &&
++									isRecord(marker.details) &&
++									isRecord(marker.details.window),
++							);
++							const previous = marker.details.window;
++							assert(typeof previous.windowNumber === "number");
++							return {
++								compaction: {
++									summary:
++										replacement === "plaintext"
++											? "forbidden plaintext summary"
++											: "[Astra remote context-window boundary; no plaintext conversation summary was generated.]",
++									firstKeptEntryId:
++										replacement === "missing-tail"
++											? randomUUID()
++											: replacement === "changed-tail"
++												? marker.id
++												: event.preparation.firstKeptEntryId,
++									tokensBefore: event.preparation.tokensBefore,
++									details: {
++										protocol: 1,
++										strategy: "astra-remote-window",
++										window: {
++											...previous,
++											previousWindowId: previous.currentWindowId,
++											currentWindowId:
++												replacement === "reused-window" ? previous.currentWindowId : randomUUID(),
++											windowNumber: previous.windowNumber + 1,
++										},
++									},
++								},
++							};
++						});
++					},
++				],
++			);
++			await current.session.prompt("retain the task across manual compaction");
++			const before = current.requests.length;
++			await expect(current.session.compact()).rejects.toThrow("Astra remote context");
++			expect(current.requests).toHaveLength(before);
++			expect(current.manager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
++		},
++	);
++
++	test("resumes after aborting an incomplete native tool call without inventing a result", async () => {
++		let first = true;
++		const current = await fixture(() => {
++			if (!first) return textResponse();
++			first = false;
++			const event = {
++				type: "response.output_item.added",
++				item: toolCall("partial_read", "read_item", {}, "history"),
++			};
++			return new Response(
++				new ReadableStream<Uint8Array>({
++					start(controller) {
++						controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
++					},
++				}),
++				{ headers: { "content-type": "text/event-stream" } },
++			);
++		});
++		const started = createGate();
++		const unsubscribe = current.session.subscribe((event) => {
++			if (event.type === "message_update" && event.assistantMessageEvent.type === "toolcall_start")
++				started.resolve();
++		});
++		const running = current.session.prompt("abort a partially emitted tool call");
++		await started.promise;
++		unsubscribe();
++		await current.session.abort();
++		await running;
++		expect(current.session.state.messages.at(-1)).toMatchObject({ role: "assistant", stopReason: "aborted" });
++		await current.session.prompt("resume from the last valid state");
++		expect(current.requests).toHaveLength(2);
++		const latest = current.requests.at(-1);
++		assert(latest);
++		expect(inputItems(latest).some((item) => item.call_id === "partial_read")).toBe(false);
++		expect(
++			current.manager.getEntries().some((entry) => entry.type === "message" && entry.message.role === "toolResult"),
++		).toBe(false);
++	});
++
++	test.each(["http-error", "abort"] as const)(
++		"persists paired tool errors and resumes after remote %s",
++		async (failure) => {
++			let generation = 0;
++			const enteredBackend = createGate();
++			const current = await fixture((request) => {
++				if (request.url === RESPONSES_URL) {
++					return generation++ === 0
++						? sse([toolCall("failed_read", "read_item", { item_id: "item", window_id: "prior" }, "history")])
++						: textResponse();
++				}
++				if (failure === "http-error")
++					return Response.json({ encrypted_output: "must-not-persist" }, { status: 503 });
++				const signal = request.signal;
++				assert(signal);
++				return new Promise<Response>((_resolve, reject) => {
++					signal.throwIfAborted();
++					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
++					enteredBackend.resolve();
++				});
++			});
++			const running = current.session.prompt("read earlier history without losing this task");
++			if (failure === "abort") {
++				await enteredBackend.promise;
++				await current.session.abort();
++			}
++			await running;
++			expect(current.manager.getEntries()).toEqual(
++				expect.arrayContaining([
++					expect.objectContaining({
++						type: "message",
++						message: expect.objectContaining({
++							role: "assistant",
++							content: expect.arrayContaining([
++								expect.objectContaining({ type: "toolCall", id: "failed_read|fc_failed_read" }),
++							]),
++						}),
++					}),
++					expect.objectContaining({
++						type: "message",
++						message: expect.objectContaining({
++							role: "toolResult",
++							toolCallId: "failed_read|fc_failed_read",
++							isError: true,
++						}),
++					}),
++				]),
++			);
++			expect(JSON.stringify(current.manager.getEntries())).not.toContain("must-not-persist");
++			const before = current.requests.length;
++			await current.session.prompt("resume the same task after the failed read");
++			expect(current.requests).toHaveLength(before + 1);
++			expect(current.errors).toEqual([]);
++		},
++	);
++
++	test.each(["uuid", "unsafe-sequence", "historical-reuse", "case-folded-reuse", "newest-invalid"] as const)(
++		"rejects persisted %s before fetch",
++		async (malformation) => {
++			const current = await fixture(() => textResponse());
++			const first = current.manager
++				.getEntries()
++				.find((entry) => entry.type === "custom_message" && entry.customType === "astra-remote-context-window");
++			assert(first?.type === "custom_message" && isRecord(first.details) && isRecord(first.details.window));
++			const original = first.details.window;
++			assert(typeof original.currentWindowId === "string");
++			const secondId = randomUUID();
++			const second = {
++				...original,
++				currentWindowId: secondId,
++				previousWindowId: original.currentWindowId,
++				windowNumber: 1,
++			};
++			if (malformation === "historical-reuse" || malformation === "case-folded-reuse") {
++				current.manager.appendCustomMessageEntry("astra-remote-context-window", "boundary", true, {
++					protocol: 1,
++					window: second,
++				});
++				current.manager.appendCustomMessageEntry("astra-remote-context-window", "boundary", true, {
++					protocol: 1,
++					window: {
++						...second,
++						currentWindowId:
++							malformation === "historical-reuse"
++								? original.currentWindowId
++								: original.currentWindowId.toUpperCase(),
++						previousWindowId: secondId,
++						windowNumber: 2,
++					},
++				});
++			} else {
++				current.manager.appendCustomMessageEntry(
++					"astra-remote-context-window",
++					"boundary",
++					true,
++					malformation === "newest-invalid"
++						? {}
++						: {
++								protocol: 1,
++								window: {
++									...second,
++									currentWindowId: malformation === "uuid" ? "not-a-uuid" : secondId,
++									windowNumber: malformation === "unsafe-sequence" ? Number.MAX_SAFE_INTEGER + 1 : 1,
++								},
++							},
++				);
++			}
++			await expect(current.session.prompt("must not dispatch malformed persisted state")).rejects.toThrow(
++				"Astra remote context",
++			);
++			expect(current.requests).toHaveLength(0);
++		},
++	);
++
++	test.each(["aborted", "stale"] as const)(
++		"releases %s pending new_context preparation without publishing a window",
++		async (interruption) => {
++			let rollCount = 0;
++			let requestRollover = true;
++			let gateRead = false;
++			let gatedOnce = false;
++			const entered = createGate();
++			const resume = createGate();
++			const current = await fixture(() => {
++				if (!requestRollover) return textResponse();
++				requestRollover = false;
++				return sse([toolCall(`cancel_roll_${++rollCount}`, "new_context", {})]);
++			}, [
++				(pi) => {
++					pi.on("tool_call", (event) => {
++						if (event.toolName === "new_context" && !gatedOnce) {
++							gatedOnce = true;
++							gateRead = true;
++						}
++					});
++				},
++			]);
++			// Gate only credential I/O; the actual host auth and window tool still execute.
++			const readCredential = current.credentials.read.bind(current.credentials);
++			current.credentials.read = async (providerId, options) => {
++				const credential = await readCredential(providerId, options);
++				if (gateRead) {
++					gateRead = false;
++					entered.resolve();
++					await resume.promise;
++				}
++				return credential;
++			};
++			const running = current.session.prompt("cancel while preparing a new window");
++			await entered.promise;
++			const aborting = interruption === "aborted" ? current.session.abort() : Promise.resolve();
++			if (interruption === "stale") current.manager.appendCustomEntry("changed-during-preparation", {});
++			resume.resolve();
++			await Promise.all([running, aborting]);
++			expect(
++				current.manager
++					.getEntries()
++					.filter(
++						(entry) => entry.type === "custom_message" && entry.customType === "astra-remote-context-window",
++					),
++			).toHaveLength(1);
++			requestRollover = true;
++			await current.session.prompt("retry the new window after cancellation");
++			expect(
++				current.manager
++					.getEntries()
++					.filter(
++						(entry) => entry.type === "custom_message" && entry.customType === "astra-remote-context-window",
++					),
++			).toMatchObject([{ details: { window: { windowNumber: 0 } } }, { details: { window: { windowNumber: 1 } } }]);
++			expect(current.requests).toHaveLength(interruption === "aborted" ? 3 : 4);
++			expect(current.errors).toEqual([]);
++		},
++	);
++
++	test("does not publish a prepared compaction window when a later hook cancels", async () => {
++		let cancel = true;
++		const current = await fixture(
++			() => textResponse(),
++			[
++				(pi) => {
++					pi.on("session_before_compact", () => {
++						if (cancel) {
++							cancel = false;
++							return { cancel: true };
++						}
++						return undefined;
++					});
++				},
++			],
++		);
++		await current.session.prompt("keep the original task until compaction commits");
++		await expect(current.session.compact()).rejects.toThrow("Compaction cancelled");
++		expect(current.manager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
++		expect(await current.session.compact()).toMatchObject({ details: { window: { windowNumber: 1 } } });
++		expect(current.requests).toHaveLength(1);
++	});
++
++	test("coalesces a duplicate new_context batch into one durable transition and can continue", async () => {
++		let generation = 0;
++		const current = await fixture(() =>
++			generation++ === 0
++				? sse([toolCall("roll_one", "new_context", {}), toolCall("roll_two", "new_context", {})])
++				: textResponse(),
++		);
++		await current.session.prompt("start exactly one new window");
++		const windows = current.manager
++			.getEntries()
++			.filter((entry) => entry.type === "custom_message" && entry.customType === "astra-remote-context-window");
++		expect(windows).toMatchObject([
++			{ details: { window: { windowNumber: 0 } } },
++			{ details: { window: { windowNumber: 1 } } },
++		]);
++		expect(current.manager.getEntries()).toEqual(
++			expect.arrayContaining([
++				expect.objectContaining({
++					type: "message",
++					message: expect.objectContaining({
++						role: "toolResult",
++						toolCallId: "roll_one|fc_roll_one",
++						isError: false,
++					}),
++				}),
++				expect.objectContaining({
++					type: "message",
++					message: expect.objectContaining({
++						role: "toolResult",
++						toolCallId: "roll_two|fc_roll_two",
++						isError: true,
++						content: expect.arrayContaining([
++							expect.objectContaining({ type: "text", text: expect.stringContaining("pending new_context") }),
++						]),
++					}),
++				}),
++			]),
++		);
++		await current.session.prompt("continue using the committed window");
++		expect(current.requests).toHaveLength(3);
++		expect(current.errors).toEqual([]);
++	});
++
++	test("retains pending follow-up input when a tool rolls the window", async () => {
++		let generation = 0;
++		let queued = false;
++		const pending = "pending user instruction survives rollover";
++		const current = await fixture(
++			() => (generation++ === 0 ? sse([toolCall("roll_pending", "new_context", {})]) : textResponse()),
++			[
++				(pi) => {
++					pi.on("tool_result", (event) => {
++						if (event.toolName === "new_context" && !queued) {
++							queued = true;
++							pi.sendUserMessage(pending, { deliverAs: "followUp" });
++						}
++					});
++				},
++			],
++		);
++		await current.session.prompt("roll this task while another input is pending");
++		await current.session.waitForIdle();
++		expect(queued).toBe(true);
++		expect(current.requests.some((request) => JSON.stringify(request.payload).includes(pending))).toBe(true);
++		expect(current.manager.getEntries()).toEqual(
++			expect.arrayContaining([
++				expect.objectContaining({
++					type: "message",
++					message: expect.objectContaining({
++						role: "user",
++						content: expect.arrayContaining([expect.objectContaining({ type: "text", text: pending })]),
++					}),
++				}),
++			]),
++		);
++		expect(current.errors).toEqual([]);
++	});
++
++	test("executes notes/history, persists encrypted images, and replays after repeated same-runtime reload and JSONL restart", async () => {
++		let generation = 0;
++		const reply: Reply = (request) => {
++			if (request.url === RESPONSES_URL) {
++				const turn = generation++;
++				if (turn % 3 === 0)
++					return sse([
++						toolCall(`notes_${turn}`, "write_file", { path: "checkpoint", text: "opaque-input" }, "notes"),
++					]);
++				if (turn % 3 === 1)
++					return sse([
++						toolCall(
++							`history_${turn}`,
++							"read_item",
++							{ item_id: "prior-item", window_id: "prior-window" },
++							"history",
++						),
++					]);
++				return textResponse();
++			}
++			expect(request.headers.get("chatgpt-account-id")).toBe(ACCOUNT_ID);
++			expect(request.payload).toMatchObject({ context: { current_agent_name: "/root" } });
++			if (request.url.endsWith("/notes/v2/write_file")) {
++				expect(request.headers.get("x-openai-encrypted-tool-arguments")).toBe("true");
++				expect(request.payload).toMatchObject({ path: "checkpoint", text: "opaque-input" });
++				return Response.json({ written: true });
++			}
++			expect(request.url).toBe("https://chatgpt.com/backend-api/codex/alpha/history/v2/read_item");
++			return Response.json({ encrypted_output: "opaque-recovery", images: [{ data: PNG, mime_type: "image/png" }] });
++		};
++		const first = await fixture(reply);
++		await first.session.prompt("preserve this task through remote recovery");
++		expect(first.requests.filter((request) => request.url === RESPONSES_URL)).toHaveLength(3);
++		expect(first.manager.getEntries()).toEqual(
++			expect.arrayContaining([
++				expect.objectContaining({
++					type: "message",
++					message: expect.objectContaining({
++						role: "toolResult",
++						toolName: "history",
++						isError: false,
++						details: { astraHistoryNotes: { encrypted_output: "opaque-recovery" } },
++						content: expect.arrayContaining([{ type: "image", data: PNG, mimeType: "image/png" }]),
++					}),
++				}),
++			]),
++		);
++		const verifyReplay = (request: CapturedRequest): void => {
++			const items = inputItems(request);
++			expect(items).toEqual(
++				expect.arrayContaining([
++					expect.objectContaining({
++						type: "function_call",
++						call_id: "history_1",
++						namespace: "history",
++						name: "read_item",
++						arguments: JSON.stringify({ item_id: "prior-item", window_id: "prior-window" }),
++					}),
++					expect.objectContaining({
++						type: "function_call_output",
++						call_id: "history_1",
++						output: [
++							{ type: "encrypted_content", encrypted_content: "opaque-recovery" },
++							{ type: "input_image", detail: "auto", image_url: `data:image/png;base64,${PNG}` },
++						],
++					}),
++					expect.objectContaining({
++						type: "function_call_output",
++						call_id: "notes_0",
++						output: expect.stringContaining('"written":true'),
++					}),
++				]),
++			);
++		};
++		const firstReplay = first.requests.filter((request) => request.url === RESPONSES_URL).at(-1);
++		assert(firstReplay);
++		verifyReplay(firstReplay);
++		await first.session.reload();
++		await first.session.reload();
++		await first.session.prompt("recover again after two reloads");
++		expect(first.requests.filter((request) => request.url === RESPONSES_URL)).toHaveLength(6);
++		expect(first.errors).toEqual([]);
++		const file = first.manager.getSessionFile();
++		assert(file);
++		expect(await readFile(file, "utf8")).toContain("opaque-recovery");
++		first.session.dispose();
++		const restarted = await fixture(reply, [], { sessionFile: file });
++		await restarted.session.prompt("recover after reopening canonical JSONL");
++		const restoredRequest = restarted.requests.find((request) => request.url === RESPONSES_URL);
++		assert(restoredRequest);
++		verifyReplay(restoredRequest);
++		expect(restarted.requests.filter((request) => request.url === RESPONSES_URL)).toHaveLength(3);
++		expect(restarted.errors).toEqual([]);
++	});
++});
+diff --git a/packages/coding-agent/test/required-context-handler.test.ts b/packages/coding-agent/test/required-context-handler.test.ts
+new file mode 100644
+index 000000000..1460c9051
+--- /dev/null
++++ b/packages/coding-agent/test/required-context-handler.test.ts
+@@ -0,0 +1,45 @@
++import { describe, expect, it } from "vitest";
++import {
++	getRequiredContextHandler,
++	REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE,
++} from "../src/core/context-handler-requirement.ts";
++import type { SessionEntry } from "../src/core/session-manager.ts";
++
++function requirement(data: unknown): SessionEntry {
++	return {
++		type: "custom",
++		customType: REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE,
++		data,
++		id: "requirement",
++		parentId: null,
++		timestamp: new Date(0).toISOString(),
++	};
++}
++
++describe("required context-handler session state", () => {
++	it("accepts one exact persisted requirement", () => {
++		expect(getRequiredContextHandler([requirement({ protocol: 1, handler: "astra-remote", version: 1 })])).toEqual({
++			handler: "astra-remote",
++			version: 1,
++		});
++	});
++
++	it("fails closed for malformed, unsupported, and conflicting requirements", () => {
++		expect(() => getRequiredContextHandler([requirement({ protocol: 2 })])).toThrow(
++			"Malformed required context-handler state",
++		);
++		expect(() =>
++			getRequiredContextHandler([requirement({ protocol: 1, handler: "astra-remote", version: 0 })]),
++		).toThrow("Malformed required context-handler state");
++		expect(() =>
++			getRequiredContextHandler([
++				requirement({ protocol: 1, handler: "astra-remote", version: 1 }),
++				{
++					...requirement({ protocol: 1, handler: "other-handler", version: 1 }),
++					id: "conflict",
++					parentId: "requirement",
++				},
++			]),
++		).toThrow("Conflicting required context-handler state");
++	});
++});
