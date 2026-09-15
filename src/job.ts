@@ -23,6 +23,14 @@ function canApplyReadyCompaction(ctx: ExtensionContext): boolean {
 	return ctx.isIdle() && !ctx.hasPendingMessages();
 }
 
+function requestCompactionBeforeNextTurn(ctx: ExtensionContext): boolean {
+	const deferredContext = ctx as ExtensionContext & {
+		requestCompactionBeforeNextTurn?: () => boolean;
+	};
+	const request = deferredContext.requestCompactionBeforeNextTurn;
+	return typeof request === "function" && request.call(ctx);
+}
+
 function shouldForceApplyReadyCompaction(ctx: ExtensionContext, deps: StartAsyncJobDependencies): boolean {
 	if (ctx.isIdle() || ctx.hasPendingMessages()) return false;
 	if (!ctx.signal || ctx.signal.aborted) return false;
@@ -157,6 +165,10 @@ export function applyReadyCompaction(
 		markStale(state, replacementReason);
 		setCliStatus(deps, ctx, state, undefined);
 		return false;
+	}
+	if (requestCompactionBeforeNextTurn(ctx)) {
+		setCliStatus(deps, ctx, state, undefined);
+		return true;
 	}
 	if (!canApplyReadyCompaction(ctx) && !shouldForceApplyReadyCompaction(ctx, deps)) {
 		setCliStatus(deps, ctx, state, `${state.adapterLabel}: ready`);
@@ -364,7 +376,7 @@ export function startAsyncJobWithDeps(
 		? getReadyJobReplacementReason(state.ready, ctx, settings)
 		: InvalidationReason.SUPERSEDED;
 	if (state.status === "ready" && state.ready && !readyReplacementReason) {
-		if (options.force) applyReadyCompaction(ctx, state, deps);
+		applyReadyCompaction(ctx, state, deps);
 		return "ready_reused";
 	}
 	if (state.status === "ready") {

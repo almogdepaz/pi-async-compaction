@@ -1,5 +1,11 @@
 # changelog
 
+## 0.1.9-astra.1 — 2026-09-15
+
+### Added
+
+- added deferred ready-summary handoff for the exact patched Pi `0.85.1` Astra host, applying a valid background result before queued steering or follow-up delivery without aborting the active turn.
+
 ## 0.1.9-astra.0 — 2026-09-10
 
 - added experimental Astra remote-context support for the exact patched Pi `0.85.1` host contract. This prerelease must not be installed on unpatched or future hosts.

@@ -304,6 +304,105 @@ describe("startAsyncJob lifecycle", () => {
 		expect(compactTriggered).toBe(0);
 	});
 
+	test("requests deferred compaction before force-stopping an active ready job", () => {
+		const state = createRuntimeState();
+		state.status = "ready";
+		state.jobId = builtinJobId;
+		state.jobCounter = 1;
+		state.ready = {
+			...readyJob({ snapshotLeafId: "u2" }),
+			jobId: builtinJobId,
+			snapshotLeafId: "u2",
+		};
+		let requestCount = 0;
+		let abortCalls = 0;
+		let compactTriggered = 0;
+
+		const applied = applyReadyCompaction(
+			{
+				...asyncJobContext(compactableEntries()),
+				isIdle: () => false,
+				hasPendingMessages: () => false,
+				signal: new AbortController().signal,
+				abort: () => abortCalls++,
+				requestCompactionBeforeNextTurn: () => {
+					requestCount++;
+					return true;
+				},
+			} as unknown as ExtensionContext,
+			state,
+			asyncJobDeps({ triggerCompaction: () => compactTriggered++ }),
+		);
+
+		expect(applied).toBe(true);
+		expect(requestCount).toBe(1);
+		expect(abortCalls).toBe(0);
+		expect(compactTriggered).toBe(0);
+		expect(state.applyInFlight).toBeUndefined();
+	});
+
+	test("retries deferred scheduling when an automatic start reuses a ready job", () => {
+		const state = createRuntimeState();
+		state.status = "ready";
+		state.jobId = builtinJobId;
+		state.jobCounter = 1;
+		state.ready = {
+			...readyJob({ snapshotLeafId: "u2" }),
+			jobId: builtinJobId,
+			snapshotLeafId: "u2",
+		};
+		let requestCount = 0;
+
+		const outcome = startAsyncJobWithDeps(
+			{
+				...asyncJobContext(compactableEntries()),
+				isIdle: () => false,
+				hasPendingMessages: () => false,
+				requestCompactionBeforeNextTurn: () => {
+					requestCount++;
+					return true;
+				},
+			} as unknown as ExtensionContext,
+			state,
+			asyncJobDeps(),
+		);
+
+		expect(outcome).toBe("ready_reused");
+		expect(requestCount).toBe(1);
+		expect(state.applyInFlight).toBeUndefined();
+	});
+
+	test("falls back to force apply when deferred compaction is rejected", () => {
+		const state = createRuntimeState();
+		state.status = "ready";
+		state.jobId = builtinJobId;
+		state.jobCounter = 1;
+		state.ready = {
+			...readyJob({ snapshotLeafId: "u2" }),
+			jobId: builtinJobId,
+			snapshotLeafId: "u2",
+		};
+		let abortCalls = 0;
+		let compactTriggered = 0;
+
+		const applied = applyReadyCompaction(
+			{
+				...asyncJobContext(compactableEntries()),
+				isIdle: () => false,
+				hasPendingMessages: () => false,
+				signal: new AbortController().signal,
+				abort: () => abortCalls++,
+				requestCompactionBeforeNextTurn: () => false,
+			} as unknown as ExtensionContext,
+			state,
+			asyncJobDeps({ triggerCompaction: () => compactTriggered++ }),
+		);
+
+		expect(applied).toBe(true);
+		expect(abortCalls).toBe(1);
+		expect(compactTriggered).toBe(1);
+	});
+
 	test("force-stops the active agent before applying a ready job over the async threshold", () => {
 		const state = createRuntimeState();
 		state.status = "ready";

@@ -59,11 +59,11 @@ pi -e .
 
 ## astra prerelease
 
-The `0.1.9-astra.0` Astra prerelease is not compatible with ordinary Pi installs. It requires the exact patched Pi `0.85.1` contract; semver matching alone is insufficient. Follow [the exact-base patch, build, and isolated activation procedure](docs/astra-remote-context.md#exact-host-build-and-isolated-activation), which installs the tagged extension through the patched CLI and an isolated `PI_CODING_AGENT_DIR`:
+The `0.1.9-astra.1` Astra prerelease is not compatible with ordinary Pi installs. It requires the exact patched Pi `0.85.1` contract; semver matching alone is insufficient. Follow [the exact-base patch, build, and isolated activation procedure](docs/astra-remote-context.md#exact-host-build-and-isolated-activation).
 
 ```bash
 cd /path/to/pi-astra-host
-PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.0" node packages/coding-agent/dist/cli.js install git:github.com/almogdepaz/pi-async-compaction@v0.1.9-astra.0
+PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.1" node packages/coding-agent/dist/cli.js install git:github.com/almogdepaz/pi-async-compaction@v0.1.9-astra.1
 ```
 
 Do not run the normal installation commands above for this prerelease; they continue to install published `0.1.8` into ordinary Pi.
@@ -98,10 +98,10 @@ Async compaction precomputes summaries early, then applies them only at a safe b
 
 1. after a turn, if context usage crosses the async start threshold, a background summary starts
 2. the background job reuses Pi's compaction preparation/generation behavior so the summary stays Pi-compatible
-3. when the summary is ready, the extension applies it immediately if Pi is idle and has no queued messages
-4. if Pi is actively responding, abortable, has no queued messages, and is still over the async threshold, it aborts and triggers Pi compaction
-5. after Pi persists that extension-provided compaction, the extension sends `continue` to resume work
-6. otherwise the ready summary is kept for later and Pi's status bar shows `<adapter label>: ready`; at Pi's next `agent_settled` event, the extension applies it if no messages are queued
+3. when the exact patched host accepts a ready-summary checkpoint during an active turn, the extension applies it before queued steering or follow-up delivery without aborting
+4. if Pi is idle, the extension applies the ready summary through Pi's normal compaction flow
+5. if the checkpoint is unavailable or rejects the request, an abortable active turn over the async threshold retains the established abort-and-compact fallback
+6. otherwise the ready summary is kept for a later safe boundary and Pi's status bar shows `<adapter label>: ready`
 7. Pi fires `session_before_compact`; if the ready async summary validates, the extension returns it
 8. otherwise Pi falls back to normal synchronous compaction
 
@@ -161,7 +161,7 @@ No. It preserves Pi's normal compaction behavior. Manual `/compact`, threshold c
 
 ### Does it interrupt active turns?
 
-Usually no. If an abortable active turn is already over the async threshold, the extension aborts, compacts, then automatically sends `continue` after Pi persists the compaction.
+Usually no. On the exact patched Astra host, a valid ready summary requests a non-aborting checkpoint before queued work. If that checkpoint is unavailable or rejects the request and an abortable active turn is already over the async threshold, the extension uses the established abort-and-compact fallback and automatically sends `continue` after Pi persists the compaction.
 
 ### What should agents search for?
 
@@ -212,7 +212,7 @@ bun run check
 bun pm pack --dry-run
 ```
 
-Published `0.1.8` was tested against Pi `0.84.3` and `0.84.4`, with peer range `>=0.84.3 <0.85.0`. The `0.1.9-astra.0` prerelease instead requires the exact patched Pi `0.85.1` build; semver compatibility alone is insufficient. Do not co-load the published and prerelease compactor copies in one Pi runtime.
+Published `0.1.8` was tested against Pi `0.84.3` and `0.84.4`, with peer range `>=0.84.3 <0.85.0`. The `0.1.9-astra.1` prerelease instead requires the exact patched Pi `0.85.1` build; semver compatibility alone is insufficient. Do not co-load the published and prerelease compactor copies in one Pi runtime.
 
 ## changelog
 

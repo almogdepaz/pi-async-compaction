@@ -78,6 +78,50 @@ describe("registerAsyncCompaction", () => {
 		]);
 	});
 
+	test("requests the host checkpoint for a ready result without aborting", async () => {
+		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+		const pi = {
+			on: (eventName: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => {
+				handlers.set(eventName, handler);
+			},
+			registerCommand: () => undefined,
+		} as unknown as ExtensionAPI;
+		registerAsyncCompaction(
+			pi,
+			createBuiltinPiCompactionAdapter(asyncJobDeps().buildAsyncCompactionResult),
+			{ commandName: false },
+			{
+				startAsyncJob: (ctx, state, options) => startAsyncJobWithDeps(ctx, state, asyncJobDeps(), options),
+			},
+		);
+		const turnEnd = handlers.get("turn_end");
+		const beforeCompact = handlers.get("session_before_compact");
+		if (!turnEnd || !beforeCompact) throw new Error("expected compaction lifecycle handlers");
+
+		let requests = 0;
+		let abortCalls = 0;
+		const ctx = {
+			...asyncJobContext(compactableEntries()),
+			isIdle: () => false,
+			hasPendingMessages: () => false,
+			signal: new AbortController().signal,
+			abort: () => abortCalls++,
+			requestCompactionBeforeNextTurn: () => {
+				requests++;
+				return true;
+			},
+		} as unknown as ExtensionContext;
+		turnEnd({}, ctx);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(requests).toBe(1);
+		expect(abortCalls).toBe(0);
+		expect(await beforeCompact(validationEvent(), ctx)).toEqual({
+			compaction: expect.objectContaining({ summary: "async summary" }),
+		});
+	});
+
 	test("records one correlated extension apply failure and clears terminal handoff state", () => {
 		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 		const lifecycleEvents: AsyncCompactionLifecycleEvent[] = [];
