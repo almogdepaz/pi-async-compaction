@@ -1,5 +1,5 @@
 diff --git a/packages/ai/src/api/openai-codex-responses.ts b/packages/ai/src/api/openai-codex-responses.ts
-index d7e3749f5831cc8a05a98fb7a7670ba697f9ecc6..dcd29a99d99cbc77605169f647ef022f564f26d0 100644
+index d7e3749f5..dcd29a99d 100644
 --- a/packages/ai/src/api/openai-codex-responses.ts
 +++ b/packages/ai/src/api/openai-codex-responses.ts
 @@ -70,6 +70,8 @@ const CODEX_RESPONSE_STATUSES = new Set<CodexResponseStatus>([
@@ -249,7 +249,7 @@ index d7e3749f5831cc8a05a98fb7a7670ba697f9ecc6..dcd29a99d99cbc77605169f647ef022f
  	for (const [key, value] of Object.entries(additionalHeaders || {})) {
  		if (value === null) {
 diff --git a/packages/ai/src/auth/oauth/openai-codex.ts b/packages/ai/src/auth/oauth/openai-codex.ts
-index 96e861a949a9b2450604492069bafb2895fe4001..c3a11a94c67a1ad2efc907c415ea01cdd6fa0b53 100644
+index 96e861a94..c3a11a94c 100644
 --- a/packages/ai/src/auth/oauth/openai-codex.ts
 +++ b/packages/ai/src/auth/oauth/openai-codex.ts
 @@ -539,6 +539,20 @@ export const openaiCodexOAuth: OAuthAuth = {
@@ -275,7 +275,7 @@ index 96e861a949a9b2450604492069bafb2895fe4001..c3a11a94c67a1ad2efc907c415ea01cd
  	},
  };
 diff --git a/packages/ai/test/oauth-auth.test.ts b/packages/ai/test/oauth-auth.test.ts
-index ceaac57f971f3c019feeb8ee59020b08396b9818..ec9bad8002c43323b558918e1e17a0ede4b15468 100644
+index ceaac57f9..ec9bad800 100644
 --- a/packages/ai/test/oauth-auth.test.ts
 +++ b/packages/ai/test/oauth-auth.test.ts
 @@ -12,6 +12,9 @@ import { anthropicProvider } from "../src/providers/anthropic.ts";
@@ -307,7 +307,7 @@ index ceaac57f971f3c019feeb8ee59020b08396b9818..ec9bad8002c43323b558918e1e17a0ed
  
  	it("openrouter derives the api key and keeps the permanent credential on refresh", async () => {
 diff --git a/packages/ai/test/openai-codex-oauth.test.ts b/packages/ai/test/openai-codex-oauth.test.ts
-index f45d4aeea5e804fba2abf926f141c1519d3429d3..a0475292619f93d14445201f8e1f6d4ee62f96a9 100644
+index f45d4aeea..a04752926 100644
 --- a/packages/ai/test/openai-codex-oauth.test.ts
 +++ b/packages/ai/test/openai-codex-oauth.test.ts
 @@ -453,6 +453,73 @@ describe("OpenAI Codex OAuth", () => {
@@ -385,7 +385,7 @@ index f45d4aeea5e804fba2abf926f141c1519d3429d3..a0475292619f93d14445201f8e1f6d4e
  		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
  		vi.stubGlobal(
 diff --git a/packages/ai/test/openai-codex-stream.test.ts b/packages/ai/test/openai-codex-stream.test.ts
-index 67294882552bc245530fd12e179f6c2e1b87bcba..9bc60384001709739cb45ffc930918b611020455 100644
+index 672948825..9bc603840 100644
 --- a/packages/ai/test/openai-codex-stream.test.ts
 +++ b/packages/ai/test/openai-codex-stream.test.ts
 @@ -209,6 +209,38 @@ describe("openai-codex streaming", () => {
@@ -598,11 +598,32 @@ index 67294882552bc245530fd12e179f6c2e1b87bcba..9bc60384001709739cb45ffc930918b6
  			connectionsCreated: 2,
  			connectionsReused: 1,
  		});
+diff --git a/packages/coding-agent/docs/extensions.md b/packages/coding-agent/docs/extensions.md
+index ce13db622..d73de0f96 100644
+--- a/packages/coding-agent/docs/extensions.md
++++ b/packages/coding-agent/docs/extensions.md
+@@ -1090,6 +1090,16 @@ ctx.compact({
+ });
+ ```
+ 
++### ctx.requestCompactionBeforeNextTurn()
++
++Request one compaction after the current turn finishes and before queued steering or follow-up messages reach the next provider request. Unlike `ctx.compact()`, this does not abort the active run. It returns `false` when Pi is idle or the run has passed its next-turn checkpoint; repeated accepted requests coalesce.
++
++```typescript
++pi.on("turn_end", (_event, ctx) => {
++  ctx.requestCompactionBeforeNextTurn();
++});
++```
++
+ ### ctx.getSystemPrompt()
+ 
+ Returns Pi's current system prompt string.
 diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
-index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89f13b2d4e 100644
+index ac2bd4b18..9794fef13 100644
 --- a/packages/coding-agent/src/core/agent-session.ts
 +++ b/packages/coding-agent/src/core/agent-session.ts
-@@ -65,6 +65,7 @@ import {
+@@ -65,11 +65,13 @@ import {
  	prepareCompaction,
  	shouldCompact,
  } from "./compaction/index.ts";
@@ -610,7 +631,47 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
  import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
  import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
-@@ -367,6 +368,7 @@ export class AgentSession {
+ import {
+ 	type ContextUsage,
++	type CompactionReason,
+ 	type ExtensionCommandContextActions,
+ 	type ExtensionErrorListener,
+ 	type ExtensionMode,
+@@ -154,13 +156,13 @@ export type AgentSessionEvent =
+ 			steering: readonly string[];
+ 			followUp: readonly string[];
+ 	  }
+-	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
++	| { type: "compaction_start"; reason: CompactionReason }
+ 	| { type: "entry_appended"; entry: SessionEntry }
+ 	| { type: "session_info_changed"; name: string | undefined }
+ 	| { type: "thinking_level_changed"; level: ThinkingLevel }
+ 	| {
+ 			type: "compaction_end";
+-			reason: "manual" | "threshold" | "overflow";
++			reason: CompactionReason;
+ 			result: CompactionResult | undefined;
+ 			aborted: boolean;
+ 			willRetry: boolean;
+@@ -179,7 +181,7 @@ export type AgentSessionEvent =
+ 	| {
+ 			type: "summarization_retry_attempt_start";
+ 			source: "compaction";
+-			reason: "manual" | "threshold" | "overflow";
++			reason: CompactionReason;
+ 	  }
+ 	| { type: "summarization_retry_finished" }
+ 	| { type: "bash_execution_update"; id?: string; delta: string };
+@@ -333,6 +335,8 @@ export class AgentSession {
+ 	// Compaction state
+ 	private _compactionAbortController: AbortController | undefined = undefined;
+ 	private _autoCompactionAbortController: AbortController | undefined = undefined;
++	private _compactionBeforeNextTurnRequested = false;
++	private _nextTurnCheckpointPassed = false;
+ 	private _overflowRecoveryAttempted = false;
+ 
+ 	// Branch summarization state
+@@ -367,6 +371,7 @@ export class AgentSession {
  	private _extensionShutdownHandler?: ShutdownHandler;
  	private _extensionErrorListener?: ExtensionErrorListener;
  	private _extensionErrorUnsubscriber?: () => void;
@@ -618,7 +679,42 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  
  	private _modelRuntime: ModelRuntime;
  
-@@ -874,6 +876,13 @@ export class AgentSession {
+@@ -540,6 +545,20 @@ export class AgentSession {
+ 	}
+ 
+ 	private async _compactBeforeNextAssistantResponse(context: AgentContext): Promise<AgentContext> {
++		this._nextTurnCheckpointPassed = true;
++		if (this._compactionBeforeNextTurnRequested) {
++			this._compactionBeforeNextTurnRequested = false;
++			const compactionsBefore = this.sessionManager.getBranch().filter((entry) => entry.type === "compaction").length;
++			await this._runAutoCompaction("deferred", false);
++			const compactionApplied = this.sessionManager.getBranch().filter((entry) => entry.type === "compaction").length > compactionsBefore;
++			if (compactionApplied) {
++				return {
++					...context,
++					messages: this.agent.state.messages.slice(),
++				};
++			}
++		}
++
+ 		const model = this.model;
+ 		const settings = this.settingsManager.getCompactionSettings();
+ 
+@@ -641,6 +660,13 @@ export class AgentSession {
+ 
+ 	/** Internal handler for agent events - shared by subscribe and reconnect */
+ 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
++		if (event.type === "agent_start" || event.type === "turn_start") {
++			this._nextTurnCheckpointPassed = false;
++		} else if (event.type === "agent_end") {
++			this._nextTurnCheckpointPassed = true;
++			this._compactionBeforeNextTurnRequested = false;
++		}
++
+ 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
+ 		// This ensures the UI sees the updated queue state
+ 		if (event.type === "message_start" && event.message.role === "user") {
+@@ -874,6 +900,13 @@ export class AgentSession {
  		}
  	}
  
@@ -632,7 +728,7 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  	/**
  	 * Remove all listeners and disconnect from agent.
  	 * Call this when completely done with the session.
-@@ -889,6 +898,9 @@ export class AgentSession {
+@@ -889,6 +922,9 @@ export class AgentSession {
  			// Dispose must succeed even if an abort hook throws.
  		}
  
@@ -642,7 +738,7 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  		this._extensionRunner.invalidate(
  			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
  		);
-@@ -931,6 +943,23 @@ export class AgentSession {
+@@ -931,6 +967,23 @@ export class AgentSession {
  		return this.agent.state.systemPrompt;
  	}
  
@@ -666,9 +762,11 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  	/** Current retry attempt (0 if not retrying) */
  	get retryAttempt(): number {
  		return this._retryAttempt;
-@@ -1105,8 +1134,10 @@ export class AgentSession {
+@@ -1104,12 +1157,16 @@ export class AgentSession {
+ 
  	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
  		this._isAgentRunActive = true;
++		this._nextTurnCheckpointPassed = false;
  		try {
 +			this.assertRequiredContextHandler();
  			await this.agent.prompt(messages);
@@ -677,7 +775,11 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  				await this.agent.continue();
  			}
  		} finally {
-@@ -1649,6 +1680,42 @@ export class AgentSession {
++			this._compactionBeforeNextTurnRequested = false;
+ 			this._systemPromptOverride = undefined;
+ 			this._flushPendingBashMessages();
+ 			this._flushPendingCustomMessages();
+@@ -1649,6 +1706,42 @@ export class AgentSession {
  		});
  	}
  
@@ -720,7 +822,7 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  	/**
  	 * Set model directly.
  	 * Validates that auth is configured and saves to the session transcript.
-@@ -1660,21 +1727,9 @@ export class AgentSession {
+@@ -1660,21 +1753,9 @@ export class AgentSession {
  			throw new Error(`No API key for ${model.provider}/${model.id}`);
  		}
  
@@ -744,7 +846,7 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  	}
  
  	private _addPersistedDefaultToNonEmptyScope(model: Model<any>): void {
-@@ -1728,22 +1783,7 @@ export class AgentSession {
+@@ -1728,22 +1809,7 @@ export class AgentSession {
  		const next = scopedModels[nextIndex];
  		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.model, next.thinkingLevel);
  
@@ -768,7 +870,7 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  
  		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
  	}
-@@ -1764,18 +1804,7 @@ export class AgentSession {
+@@ -1764,18 +1830,7 @@ export class AgentSession {
  		const nextModel = availableModels[nextIndex];
  
  		const thinkingLevel = this._getThinkingLevelForModelSwitch(nextModel);
@@ -788,7 +890,32 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  
  		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: false };
  	}
-@@ -1944,6 +1973,7 @@ export class AgentSession {
+@@ -1896,6 +1951,15 @@ export class AgentSession {
+ 	// Compaction
+ 	// =========================================================================
+ 
++	/** Request one compaction at the next post-turn checkpoint before queued messages are delivered. */
++	requestCompactionBeforeNextTurn(): boolean {
++		if (!this.isStreaming || this._nextTurnCheckpointPassed) {
++			return false;
++		}
++		this._compactionBeforeNextTurnRequested = true;
++		return true;
++	}
++
+ 	/** Generate Pi's built-in compaction summary for manual and automatic compaction. */
+ 	private async _runDefaultCompaction(
+ 		preparation: CompactionPreparation,
+@@ -1905,7 +1969,7 @@ export class AgentSession {
+ 		customInstructions: string | undefined,
+ 		signal: AbortSignal,
+ 		env: Record<string, string> | undefined,
+-		reason: "manual" | "threshold" | "overflow",
++		reason: CompactionReason,
+ 	): Promise<CompactionResult> {
+ 		return compact(
+ 			preparation,
+@@ -1944,6 +2008,7 @@ export class AgentSession {
  	 * @param customInstructions Optional instructions for the compaction summary
  	 */
  	async compact(customInstructions?: string): Promise<CompactionResult> {
@@ -796,7 +923,7 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  		await this.abort();
  		this._compactionAbortController = new AbortController();
  		this._emit({ type: "compaction_start", reason: "manual" });
-@@ -1969,6 +1999,10 @@ export class AgentSession {
+@@ -1969,6 +2034,10 @@ export class AgentSession {
  				throw new Error("Nothing to compact (session too small)");
  			}
  
@@ -807,7 +934,7 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  			let extensionCompaction: CompactionResult | undefined;
  
  			if (this._extensionRunner.hasHandlers("session_before_compact")) {
-@@ -2028,6 +2062,8 @@ export class AgentSession {
+@@ -2028,6 +2097,8 @@ export class AgentSession {
  				throw new Error("Compaction cancelled");
  			}
  
@@ -816,16 +943,40 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
  			const newEntries = this.sessionManager.getEntries();
  			const sessionContext = this.sessionManager.buildSessionContext();
-@@ -2246,6 +2282,7 @@ export class AgentSession {
+@@ -2245,17 +2316,23 @@ export class AgentSession {
+ 	 * @param willRetry Whether to continue the interrupted turn after overflow compaction
  	 * @returns Whether the post-run loop should call `agent.continue()`
  	 */
- 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
+-	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
++	private async _runAutoCompaction(reason: Exclude<CompactionReason, "manual">, willRetry: boolean): Promise<boolean> {
 +		this.assertRequiredContextHandler();
  		const settings = this.settingsManager.getCompactionSettings();
  		let started = false;
  		let fromExtension = false;
-@@ -2268,6 +2305,10 @@ export class AgentSession {
+ 
+ 		try {
+-			if (!this.model) {
++			const model = this.model;
++			if (!model) {
+ 				return false;
+ 			}
+ 
+-			const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
++			// Deferred extension summaries are already computed. Offer them before
++			// resolving summarization auth; threshold and overflow retain their
++			// established eager-auth behavior.
++			const eagerSummarizationAuth =
++				reason === "deferred" ? undefined : await this._getSummarizationRequestAuth(model);
+ 
+ 			const pathEntries = this.sessionManager.getBranch();
+ 
+@@ -2264,10 +2341,14 @@ export class AgentSession {
+ 				return false;
+ 			}
+ 
+-			this._emit({ type: "compaction_start", reason });
  			this._autoCompactionAbortController = new AbortController();
++			this._emit({ type: "compaction_start", reason });
  			started = true;
  
 +			const preparedBoundary = {
@@ -835,7 +986,16 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  			let extensionCompaction: CompactionResult | undefined;
  
  			if (this._extensionRunner.hasHandlers("session_before_compact")) {
-@@ -2353,6 +2394,8 @@ export class AgentSession {
+@@ -2319,6 +2400,8 @@ export class AgentSession {
+ 				details = extensionCompaction.details;
+ 			} else {
+ 				// Shared default summary generator, also used by manual compaction.
++				const { model: requestModel, apiKey, headers, env } =
++					eagerSummarizationAuth ?? await this._getSummarizationRequestAuth(model);
+ 				const compactResult = await this._runDefaultCompaction(
+ 					preparation,
+ 					requestModel,
+@@ -2353,6 +2436,8 @@ export class AgentSession {
  				return false;
  			}
  
@@ -844,7 +1004,18 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
  			const newEntries = this.sessionManager.getEntries();
  			const sessionContext = this.sessionManager.buildSessionContext();
-@@ -2464,6 +2507,7 @@ export class AgentSession {
+@@ -2406,7 +2491,9 @@ export class AgentSession {
+ 				const formattedErrorMessage =
+ 					reason === "overflow"
+ 						? `Context overflow recovery failed: ${errorMessage}`
+-						: `Auto-compaction failed: ${errorMessage}`;
++						: reason === "deferred"
++							? `Deferred compaction failed: ${errorMessage}`
++							: `Auto-compaction failed: ${errorMessage}`;
+ 				this._emit({
+ 					type: "compaction_end",
+ 					reason,
+@@ -2464,6 +2551,7 @@ export class AgentSession {
  
  		this._applyExtensionBindings(this._extensionRunner);
  		await this._extensionRunner.emit(this._sessionStartEvent);
@@ -852,7 +1023,7 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
  	}
  
-@@ -2608,6 +2652,7 @@ export class AgentSession {
+@@ -2608,6 +2696,7 @@ export class AgentSession {
  				},
  				getActiveTools: () => this.getActiveToolNames(),
  				getAllTools: () => this.getAllTools(),
@@ -860,7 +1031,15 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  				setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
  				refreshTools: () => this._refreshToolRegistry(),
  				getCommands,
-@@ -2657,7 +2702,7 @@ export class AgentSession {
+@@ -2648,6 +2737,7 @@ export class AgentSession {
+ 						}
+ 					})();
+ 				},
++				requestCompactionBeforeNextTurn: () => this.requestCompactionBeforeNextTurn(),
+ 				getSystemPrompt: () => this.systemPrompt,
+ 				getSystemPromptOptions: () => this._baseSystemPromptOptions,
+ 			},
+@@ -2657,7 +2747,7 @@ export class AgentSession {
  					this._refreshCurrentModelFromRegistry();
  				},
  				registerNativeProvider: (provider) => {
@@ -869,7 +1048,7 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  					this._refreshCurrentModelFromRegistry();
  				},
  				unregisterProvider: (name) => {
-@@ -2819,6 +2864,7 @@ export class AgentSession {
+@@ -2819,6 +2909,7 @@ export class AgentSession {
  		const oldRunner = this._extensionRunner;
  		const previousFlagValues = oldRunner.getFlagValues();
  		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
@@ -877,8 +1056,17 @@ index ac2bd4b18dbe4d888e48309ad7bb63f1166179b5..5cfd6442d7170054f0a8316e76548e89
  		oldRunner.invalidate();
  		await this.settingsManager.reload();
  		this.syncQueueModesFromSettings();
+@@ -2863,7 +2954,7 @@ export class AgentSession {
+ 	 * the TUI needs to render the retry and recreate the underlying indicator.
+ 	 */
+ 	private _summarizationRetryCallbacks(
+-		source: { source: "branchSummary" } | { source: "compaction"; reason: "manual" | "threshold" | "overflow" },
++		source: { source: "branchSummary" } | { source: "compaction"; reason: CompactionReason },
+ 	): RetryCallbacks {
+ 		return {
+ 			onRetryScheduled: (attempt, maxAttempts, delayMs, errorMessage) => {
 diff --git a/packages/coding-agent/src/core/compaction/compaction.ts b/packages/coding-agent/src/core/compaction/compaction.ts
-index 6ced927cab8ece071e022a35e22dd7e6fa160f05..e63825268ccea4051df14eb082147c35d9458759 100644
+index 6ced927ca..e63825268 100644
 --- a/packages/coding-agent/src/core/compaction/compaction.ts
 +++ b/packages/coding-agent/src/core/compaction/compaction.ts
 @@ -427,12 +427,14 @@ export function findCutPoint(
@@ -900,11 +1088,66 @@ index 6ced927cab8ece071e022a35e22dd7e6fa160f05..e63825268ccea4051df14eb082147c35
  			}
  			break;
  		}
+diff --git a/packages/coding-agent/src/core/context-handler-requirement.ts b/packages/coding-agent/src/core/context-handler-requirement.ts
+new file mode 100644
+index 000000000..30d0dc57c
+--- /dev/null
++++ b/packages/coding-agent/src/core/context-handler-requirement.ts
+@@ -0,0 +1,43 @@
++import type { SessionEntry } from "./session-manager.ts";
++
++export const REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE = "pi.required-context-handler";
++
++export interface RequiredContextHandler {
++	readonly handler: string;
++	readonly version: number;
++}
++
++const HANDLER_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
++
++function parseRequirement(value: unknown): RequiredContextHandler {
++	if (!value || typeof value !== "object" || Array.isArray(value)) {
++		throw new Error("Malformed required context-handler state");
++	}
++	const record = value as Record<string, unknown>;
++	if (
++		record["protocol"] !== 1 ||
++		typeof record["handler"] !== "string" ||
++		!HANDLER_ID_PATTERN.test(record["handler"]) ||
++		!Number.isInteger(record["version"]) ||
++		(record["version"] as number) < 1
++	) {
++		throw new Error("Malformed required context-handler state");
++	}
++	return { handler: record["handler"], version: record["version"] as number };
++}
++
++/** Returns the single persisted context handler requirement, if the session has one. */
++export function getRequiredContextHandler(entries: readonly SessionEntry[]): RequiredContextHandler | undefined {
++	let requirement: RequiredContextHandler | undefined;
++	for (const entry of entries) {
++		if (entry.type !== "custom" || entry.customType !== REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE) {
++			continue;
++		}
++		const parsed = parseRequirement(entry.data);
++		if (requirement && (requirement.handler !== parsed.handler || requirement.version !== parsed.version)) {
++			throw new Error("Conflicting required context-handler state");
++		}
++		requirement = parsed;
++	}
++	return requirement;
++}
 diff --git a/packages/coding-agent/src/core/extensions/index.ts b/packages/coding-agent/src/core/extensions/index.ts
-index f19816a9a634d6dcc385500d88ea3514bb06d93c..40637d10d7fe066a58d1014f8bf71f263f6b9d6d 100644
+index f19816a9a..1133aacaf 100644
 --- a/packages/coding-agent/src/core/extensions/index.ts
 +++ b/packages/coding-agent/src/core/extensions/index.ts
-@@ -46,6 +46,7 @@ export type {
+@@ -41,11 +41,13 @@ export type {
+ 	BeforeProviderRequestEventResult,
+ 	BuildSystemPromptOptions,
+ 	// Context
++	CompactionReason,
+ 	CompactOptions,
+ 	// Events - Agent
  	ContextEvent,
  	// Event Results
  	ContextEventResult,
@@ -913,7 +1156,7 @@ index f19816a9a634d6dcc385500d88ea3514bb06d93c..40637d10d7fe066a58d1014f8bf71f26
  	CustomToolCallEvent,
  	CustomToolResultEvent,
 diff --git a/packages/coding-agent/src/core/extensions/loader.ts b/packages/coding-agent/src/core/extensions/loader.ts
-index 32ca6c9528658db16b767de13043914aa59d35f4..c66824f652f8deac4e23f4a5a0d2acfb07e5f35f 100644
+index 32ca6c952..c66824f65 100644
 --- a/packages/coding-agent/src/core/extensions/loader.ts
 +++ b/packages/coding-agent/src/core/extensions/loader.ts
 @@ -7,8 +7,9 @@ import * as fs from "node:fs";
@@ -1003,7 +1246,7 @@ index 32ca6c9528658db16b767de13043914aa59d35f4..c66824f652f8deac4e23f4a5a0d2acfb
  		entryRenderers: new Map(),
  		commands: new Map(),
 diff --git a/packages/coding-agent/src/core/extensions/runner.ts b/packages/coding-agent/src/core/extensions/runner.ts
-index 3346645a10456c36f5fc3051fda1540c4e7d1f8b..0ca25cd5c9dd812f695f758e69e6ac5d002666b6 100644
+index 3346645a1..1fa5d7fc1 100644
 --- a/packages/coding-agent/src/core/extensions/runner.ts
 +++ b/packages/coding-agent/src/core/extensions/runner.ts
 @@ -6,6 +6,8 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -1041,7 +1284,15 @@ index 3346645a10456c36f5fc3051fda1540c4e7d1f8b..0ca25cd5c9dd812f695f758e69e6ac5d
  }
  
  export async function emitProjectTrustEvent(
-@@ -296,6 +295,7 @@ export class ExtensionRunner {
+@@ -285,6 +284,7 @@ export class ExtensionRunner {
+ 	private hasPendingMessagesFn: () => boolean = () => false;
+ 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
+ 	private compactFn: (options?: CompactOptions) => void = () => {};
++	private requestCompactionBeforeNextTurnFn: () => boolean = () => false;
+ 	private getSystemPromptFn: () => string = () => "";
+ 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
+ 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
+@@ -296,6 +296,7 @@ export class ExtensionRunner {
  	private shortcutDiagnostics: ResourceDiagnostic[] = [];
  	private commandDiagnostics: ResourceDiagnostic[] = [];
  	private staleMessage: string | undefined;
@@ -1049,7 +1300,7 @@ index 3346645a10456c36f5fc3051fda1540c4e7d1f8b..0ca25cd5c9dd812f695f758e69e6ac5d
  	private uiPromptDepth = 0;
  	private activeUIPrompt: { kind: UIPromptKind; title?: string } | undefined;
  
-@@ -307,6 +307,7 @@ export class ExtensionRunner {
+@@ -307,6 +308,7 @@ export class ExtensionRunner {
  		modelRegistry: ModelRegistry,
  	) {
  		this.extensions = extensions;
@@ -1057,7 +1308,7 @@ index 3346645a10456c36f5fc3051fda1540c4e7d1f8b..0ca25cd5c9dd812f695f758e69e6ac5d
  		this.runtime = runtime;
  		this.uiContext = noOpUIContext;
  		this.cwd = cwd;
-@@ -332,6 +333,7 @@ export class ExtensionRunner {
+@@ -332,6 +334,7 @@ export class ExtensionRunner {
  		this.runtime.setLabel = actions.setLabel;
  		this.runtime.getActiveTools = actions.getActiveTools;
  		this.runtime.getAllTools = actions.getAllTools;
@@ -1065,7 +1316,15 @@ index 3346645a10456c36f5fc3051fda1540c4e7d1f8b..0ca25cd5c9dd812f695f758e69e6ac5d
  		this.runtime.setActiveTools = actions.setActiveTools;
  		this.runtime.refreshTools = actions.refreshTools;
  		this.runtime.getCommands = actions.getCommands;
-@@ -626,6 +628,75 @@ export class ExtensionRunner {
+@@ -350,6 +353,7 @@ export class ExtensionRunner {
+ 		this.shutdownHandler = contextActions.shutdown;
+ 		this.getContextUsageFn = contextActions.getContextUsage;
+ 		this.compactFn = contextActions.compact;
++		this.requestCompactionBeforeNextTurnFn = contextActions.requestCompactionBeforeNextTurn;
+ 		this.getSystemPromptFn = contextActions.getSystemPrompt;
+ 		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
+ 
+@@ -626,6 +630,75 @@ export class ExtensionRunner {
  		return false;
  	}
  
@@ -1141,7 +1400,18 @@ index 3346645a10456c36f5fc3051fda1540c4e7d1f8b..0ca25cd5c9dd812f695f758e69e6ac5d
  	getMessageRenderer(customType: string): MessageRenderer | undefined {
  		for (const ext of this.extensions) {
  			const renderer = ext.messageRenderers.get(customType);
-@@ -1031,9 +1102,12 @@ export class ExtensionRunner {
+@@ -793,6 +866,10 @@ export class ExtensionRunner {
+ 				runner.assertActive();
+ 				runner.compactFn(options);
+ 			},
++			requestCompactionBeforeNextTurn: () => {
++				runner.assertActive();
++				return runner.requestCompactionBeforeNextTurnFn();
++			},
+ 			getSystemPrompt: () => {
+ 				runner.assertActive();
+ 				return runner.getSystemPromptFn();
+@@ -1031,9 +1108,12 @@ export class ExtensionRunner {
  		return undefined;
  	}
  
@@ -1156,7 +1426,7 @@ index 3346645a10456c36f5fc3051fda1540c4e7d1f8b..0ca25cd5c9dd812f695f758e69e6ac5d
  
  		for (const ext of this.extensions) {
  			const handlers = ext.handlers.get("context");
-@@ -1056,10 +1130,14 @@ export class ExtensionRunner {
+@@ -1056,10 +1136,14 @@ export class ExtensionRunner {
  						error: message,
  						stack,
  					});
@@ -1172,10 +1442,61 @@ index 3346645a10456c36f5fc3051fda1540c4e7d1f8b..0ca25cd5c9dd812f695f758e69e6ac5d
  	}
  
 diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
-index eaff3a86ebf50ec543faf936699f5e6c84dfdf65..089ec5912f0959bcd91758d7a931b3bbbac009ba 100644
+index eaff3a86e..53dead063 100644
 --- a/packages/coding-agent/src/core/extensions/types.ts
 +++ b/packages/coding-agent/src/core/extensions/types.ts
-@@ -1249,6 +1249,24 @@ export type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContex
+@@ -295,6 +295,8 @@ export interface ContextUsage {
+ 	percent: number | null;
+ }
+ 
++export type CompactionReason = "manual" | "deferred" | "threshold" | "overflow";
++
+ export interface CompactOptions {
+ 	customInstructions?: string;
+ 	onComplete?: (result: CompactionResult) => void;
+@@ -344,6 +346,8 @@ export interface ExtensionContext {
+ 	getContextUsage(): ContextUsage | undefined;
+ 	/** Trigger compaction without awaiting completion. */
+ 	compact(options?: CompactOptions): void;
++	/** Request one compaction after the current turn, before queued messages are delivered. */
++	requestCompactionBeforeNextTurn(): boolean;
+ 	/** Get the current effective system prompt. */
+ 	getSystemPrompt(): string;
+ }
+@@ -596,8 +600,8 @@ export interface SessionBeforeCompactEvent {
+ 	preparation: CompactionPreparation;
+ 	branchEntries: SessionEntry[];
+ 	customInstructions?: string;
+-	/** What triggered the compaction: manual /compact, the context threshold, or context overflow recovery */
+-	reason: "manual" | "threshold" | "overflow";
++	/** What triggered the compaction: manual /compact, an extension request, the context threshold, or context overflow recovery */
++	reason: CompactionReason;
+ 	/** True when the aborted turn is retried after this compaction (overflow recovery) */
+ 	willRetry: boolean;
+ 	signal: AbortSignal;
+@@ -608,8 +612,8 @@ export interface SessionCompactEvent {
+ 	type: "session_compact";
+ 	compactionEntry: CompactionEntry;
+ 	fromExtension: boolean;
+-	/** What triggered the compaction: manual /compact, the context threshold, or context overflow recovery */
+-	reason: "manual" | "threshold" | "overflow";
++	/** What triggered the compaction: manual /compact, an extension request, the context threshold, or context overflow recovery */
++	reason: CompactionReason;
+ 	/** True when the aborted turn is retried after this compaction (overflow recovery) */
+ 	willRetry: boolean;
+ }
+@@ -617,8 +621,8 @@ export interface SessionCompactEvent {
+ /** Fired after context compaction fails or is aborted */
+ export interface SessionCompactFailedEvent {
+ 	type: "session_compact_failed";
+-	/** What triggered the compaction: manual /compact, the context threshold, or context overflow recovery */
+-	reason: "manual" | "threshold" | "overflow";
++	/** What triggered the compaction: manual /compact, an extension request, the context threshold, or context overflow recovery */
++	reason: CompactionReason;
+ 	/** Error text when compaction failed for a non-abort reason. */
+ 	errorMessage?: string;
+ 	/** True when compaction was cancelled or aborted. */
+@@ -1249,6 +1253,24 @@ export type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContex
  /**
   * ExtensionAPI passed to extension factory functions.
   */
@@ -1200,7 +1521,7 @@ index eaff3a86ebf50ec543faf936699f5e6c84dfdf65..089ec5912f0959bcd91758d7a931b3bb
  export interface ExtensionAPI {
  	// =========================================================================
  	// Event Subscription
-@@ -1309,6 +1327,23 @@ export interface ExtensionAPI {
+@@ -1309,6 +1331,23 @@ export interface ExtensionAPI {
  		tool: ToolDefinition<TParams, TDetails, TState>,
  	): void;
  
@@ -1224,7 +1545,7 @@ index eaff3a86ebf50ec543faf936699f5e6c84dfdf65..089ec5912f0959bcd91758d7a931b3bb
  	// =========================================================================
  	// Command, Shortcut, Flag Registration
  	// =========================================================================
-@@ -1402,6 +1437,9 @@ export interface ExtensionAPI {
+@@ -1402,6 +1441,9 @@ export interface ExtensionAPI {
  	/** Get all configured tools with parameter schema, prompt guidelines, and source metadata. */
  	getAllTools(): ToolInfo[];
  
@@ -1234,7 +1555,7 @@ index eaff3a86ebf50ec543faf936699f5e6c84dfdf65..089ec5912f0959bcd91758d7a931b3bb
  	/** Set the active tools by name. */
  	setActiveTools(toolNames: string[]): void;
  
-@@ -1648,6 +1686,8 @@ export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters
+@@ -1648,6 +1690,8 @@ export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters
  
  export type GetAllToolsHandler = () => ToolInfo[];
  
@@ -1243,7 +1564,7 @@ index eaff3a86ebf50ec543faf936699f5e6c84dfdf65..089ec5912f0959bcd91758d7a931b3bb
  export type GetCommandsHandler = () => SlashCommandInfo[];
  
  export type SetActiveToolsHandler = (toolNames: string[]) => void;
-@@ -1702,6 +1742,7 @@ export interface ExtensionActions {
+@@ -1702,6 +1746,7 @@ export interface ExtensionActions {
  	setLabel: SetLabelHandler;
  	getActiveTools: GetActiveToolsHandler;
  	getAllTools: GetAllToolsHandler;
@@ -1251,7 +1572,15 @@ index eaff3a86ebf50ec543faf936699f5e6c84dfdf65..089ec5912f0959bcd91758d7a931b3bb
  	setActiveTools: SetActiveToolsHandler;
  	refreshTools: RefreshToolsHandler;
  	getCommands: GetCommandsHandler;
-@@ -1769,6 +1810,7 @@ export interface Extension {
+@@ -1725,6 +1770,7 @@ export interface ExtensionContextActions {
+ 	shutdown: () => void;
+ 	getContextUsage: () => ContextUsage | undefined;
+ 	compact: (options?: CompactOptions) => void;
++	requestCompactionBeforeNextTurn: () => boolean;
+ 	getSystemPrompt: () => string;
+ 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
+ }
+@@ -1769,6 +1815,7 @@ export interface Extension {
  	sourceInfo: SourceInfo;
  	handlers: Map<string, HandlerFn[]>;
  	tools: Map<string, RegisteredTool>;
@@ -1260,7 +1589,7 @@ index eaff3a86ebf50ec543faf936699f5e6c84dfdf65..089ec5912f0959bcd91758d7a931b3bb
  	markdownTransformer?: MarkdownTransformer;
  	entryRenderers?: Map<string, EntryRenderer>;
 diff --git a/packages/coding-agent/src/core/model-runtime.ts b/packages/coding-agent/src/core/model-runtime.ts
-index a7bfec8b7653c37f5dc909cd07a17ae61c397d56..7d58c73e430a23e86b8939bf3b6226becb998543 100644
+index a7bfec8b7..7d58c73e4 100644
 --- a/packages/coding-agent/src/core/model-runtime.ts
 +++ b/packages/coding-agent/src/core/model-runtime.ts
 @@ -738,13 +738,20 @@ export class ModelRuntime implements Models {
@@ -1286,7 +1615,7 @@ index a7bfec8b7653c37f5dc909cd07a17ae61c397d56..7d58c73e430a23e86b8939bf3b6226be
  
  	registerProvider(providerId: string, config: ProviderConfigInput): void {
 diff --git a/packages/coding-agent/src/core/sdk.ts b/packages/coding-agent/src/core/sdk.ts
-index adbf102a398289212122c4b187b1bed8d79a08be..9f1f7e6ca26f87df2fe4f5cb2e36327ae7768e58 100644
+index adbf102a3..9f1f7e6ca 100644
 --- a/packages/coding-agent/src/core/sdk.ts
 +++ b/packages/coding-agent/src/core/sdk.ts
 @@ -5,6 +5,7 @@ import { getAgentDir } from "../config.ts";
@@ -1369,7 +1698,7 @@ index adbf102a398289212122c4b187b1bed8d79a08be..9f1f7e6ca26f87df2fe4f5cb2e36327a
  		sessionManager,
  		settingsManager,
 diff --git a/packages/coding-agent/src/index.ts b/packages/coding-agent/src/index.ts
-index 6667389f1cdd71f3342626b9f5aab45bee755958..d7354a95ef93b75ad9d27b0b1a107aa096e5abf9 100644
+index 6667389f1..d7354a95e 100644
 --- a/packages/coding-agent/src/index.ts
 +++ b/packages/coding-agent/src/index.ts
 @@ -67,6 +67,7 @@ export type {
@@ -1380,8 +1709,43 @@ index 6667389f1cdd71f3342626b9f5aab45bee755958..d7354a95ef93b75ad9d27b0b1a107aa0
  	ContextUsage,
  	CustomToolCallEvent,
  	EditToolCallEvent,
+diff --git a/packages/coding-agent/src/modes/interactive/components/status-indicator.ts b/packages/coding-agent/src/modes/interactive/components/status-indicator.ts
+index 4efeb41ee..df9bc9a21 100644
+--- a/packages/coding-agent/src/modes/interactive/components/status-indicator.ts
++++ b/packages/coding-agent/src/modes/interactive/components/status-indicator.ts
+@@ -1,5 +1,5 @@
+ import { type Component, Loader, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
+-import type { WorkingIndicatorOptions } from "../../../core/extensions/index.ts";
++import type { CompactionReason, WorkingIndicatorOptions } from "../../../core/extensions/index.ts";
+ import { theme } from "../theme/theme.ts";
+ import { CountdownTimer } from "./countdown-timer.ts";
+ import { keyText } from "./keybinding-hints.ts";
+@@ -80,10 +80,8 @@ export class RetryStatusIndicator extends StatusIndicator {
+ 	}
+ }
+ 
+-export type CompactionStatusReason = "manual" | "threshold" | "overflow";
+-
+ export class CompactionStatusIndicator extends StatusIndicator {
+-	constructor(ui: TUI, reason: CompactionStatusReason) {
++	constructor(ui: TUI, reason: CompactionReason) {
+ 		const cancelHint = `(${keyText("app.interrupt")} to cancel)`;
+ 		const label =
+ 			reason === "manual"
+diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+index 84456fc02..3e49ebacc 100644
+--- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+@@ -2054,6 +2054,7 @@ export class InteractiveMode {
+ 				this.shutdownRequested = true;
+ 			},
+ 			getContextUsage: () => this.session.getContextUsage(),
++			requestCompactionBeforeNextTurn: () => this.session.requestCompactionBeforeNextTurn(),
+ 			compact: (options) => {
+ 				void (async () => {
+ 					try {
 diff --git a/packages/coding-agent/test/agent-session-concurrent.test.ts b/packages/coding-agent/test/agent-session-concurrent.test.ts
-index bd825ec7e6dfeb82c510c4f6aafe4aebc20aa324..2176c21de1f0a912670c7fa7bb71827075c42e88 100644
+index bd825ec7e..2176c21de 100644
 --- a/packages/coding-agent/test/agent-session-concurrent.test.ts
 +++ b/packages/coding-agent/test/agent-session-concurrent.test.ts
 @@ -16,12 +16,11 @@ import {
@@ -1504,471 +1868,6 @@ index bd825ec7e6dfeb82c510c4f6aafe4aebc20aa324..2176c21de1f0a912670c7fa7bb718270
  
  		await session.prompt("hi");
  		await session.agent.waitForIdle();
-diff --git a/packages/coding-agent/test/auth-check.test.ts b/packages/coding-agent/test/auth-check.test.ts
-index 5f1ce6327975dd41a546ed049a2cca38114aeeed..5159f34f46cfeabcfd09aacfbe7337a36a54a306 100644
---- a/packages/coding-agent/test/auth-check.test.ts
-+++ b/packages/coding-agent/test/auth-check.test.ts
-@@ -10,6 +10,10 @@ import { AuthStorage, ReadOnlyAuthStorage } from "../src/core/auth-storage.ts";
- import { ModelRuntime } from "../src/core/model-runtime.ts";
- 
- const tempDir = join(tmpdir(), `pi-test-auth-check-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-+const CODEX_ACCESS_TOKEN =
-+	"offline.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoidGVzdC1jb2RleC1hY2NvdW50In19.old";
-+const REFRESHED_CODEX_ACCESS_TOKEN =
-+	"offline.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoidGVzdC1jb2RleC1hY2NvdW50In19.fresh";
- 
- async function createRuntime(credentials: AuthStorage | ReadOnlyAuthStorage): Promise<ModelRuntime> {
- 	return ModelRuntime.create({
-@@ -62,7 +66,7 @@ describe("auth check command", () => {
- 		);
- 
- 		const credentials = AuthStorage.inMemory({
--			"openai-codex": { type: "oauth", access: "old-token", refresh: "refresh-token", expires: 0 },
-+			"openai-codex": { type: "oauth", access: CODEX_ACCESS_TOKEN, refresh: "refresh-token", expires: 0 },
- 		});
- 		const oauthRuntime = await createRuntime(credentials);
- 		const oauth = oauthRuntime.getProvider("openai-codex")?.auth.oauth;
-@@ -71,21 +75,21 @@ describe("auth check command", () => {
- 		oauth.refresh = refresh;
- 
- 		await expect(getProviderCredential("openai-codex", oauthRuntime, credentials, { refresh: false })).resolves.toBe(
--			"old-token",
-+			CODEX_ACCESS_TOKEN,
- 		);
- 		expect(refresh).not.toHaveBeenCalled();
- 	});
- 
- 	test("refreshes OAuth by default", async () => {
- 		const credentials = AuthStorage.inMemory({
--			"openai-codex": { type: "oauth", access: "old-token", refresh: "refresh-token", expires: 0 },
-+			"openai-codex": { type: "oauth", access: CODEX_ACCESS_TOKEN, refresh: "refresh-token", expires: 0 },
- 		});
- 		const runtime = await createRuntime(credentials);
- 		const oauth = runtime.getProvider("openai-codex")?.auth.oauth;
- 		if (!oauth) throw new Error("OpenAI Codex OAuth provider is not registered");
- 		const refresh = vi.fn(async () => ({
- 			type: "oauth" as const,
--			access: "fresh-token",
-+			access: REFRESHED_CODEX_ACCESS_TOKEN,
- 			refresh: "refresh-token",
- 			expires: Date.now() + 60 * 60 * 1000,
- 		}));
-diff --git a/packages/coding-agent/test/compaction-extensions.test.ts b/packages/coding-agent/test/compaction-extensions.test.ts
-index 7b8f8e627fb1bf7b0d5045f15f29044e383c66ed..6825a0ade3d65f7c89b17eec84b0a59005b83662 100644
---- a/packages/coding-agent/test/compaction-extensions.test.ts
-+++ b/packages/coding-agent/test/compaction-extensions.test.ts
-@@ -76,6 +76,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
- 			path: "test-extension",
- 			resolvedPath: "/test/test-extension.ts",
- 			sourceInfo: createSyntheticSourceInfo("<test:test-extension>", { source: "test" }),
-+			contextHandlers: new Map(),
- 			handlers,
- 			tools: new Map(),
- 			messageRenderers: new Map(),
-@@ -233,6 +234,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
- 			path: "throwing-extension",
- 			resolvedPath: "/test/throwing-extension.ts",
- 			sourceInfo: createSyntheticSourceInfo("<test:throwing-extension>", { source: "test" }),
-+			contextHandlers: new Map(),
- 			handlers: new Map<string, ((event: any, ctx: any) => Promise<any>)[]>([
- 				[
- 					"session_before_compact",
-@@ -282,6 +284,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
- 			path: "extension1",
- 			resolvedPath: "/test/extension1.ts",
- 			sourceInfo: createSyntheticSourceInfo("<test:extension1>", { source: "test" }),
-+			contextHandlers: new Map(),
- 			handlers: new Map<string, ((event: any, ctx: any) => Promise<any>)[]>([
- 				[
- 					"session_before_compact",
-@@ -313,6 +316,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
- 			path: "extension2",
- 			resolvedPath: "/test/extension2.ts",
- 			sourceInfo: createSyntheticSourceInfo("<test:extension2>", { source: "test" }),
-+			contextHandlers: new Map(),
- 			handlers: new Map<string, ((event: any, ctx: any) => Promise<any>)[]>([
- 				[
- 					"session_before_compact",
-diff --git a/packages/coding-agent/test/compaction.test.ts b/packages/coding-agent/test/compaction.test.ts
-index 12c9d0be220319aa5056c470f069a8a3025d39c0..870c1dc26284d4614aadb4ba0bcb450e4bf8dd87 100644
---- a/packages/coding-agent/test/compaction.test.ts
-+++ b/packages/coding-agent/test/compaction.test.ts
-@@ -333,6 +333,45 @@ describe("findCutPoint", () => {
- 		expect(result.firstKeptEntryIndex).toBe(0);
- 	});
- 
-+	it("should retain an oversized tool-call turn from its assistant entry", () => {
-+		const entries: SessionEntry[] = [
-+			createMessageEntry(createUserMessage("older turn")),
-+			createMessageEntry(createAssistantMessage("older response")),
-+			createMessageEntry(createUserMessage("current turn")),
-+			createMessageEntry({
-+				...createAssistantMessage(""),
-+				content: [
-+					{ type: "toolCall", id: "tool-call-1", name: "read", arguments: { path: "large-file-1" } },
-+					{ type: "toolCall", id: "tool-call-2", name: "read", arguments: { path: "large-file-2" } },
-+				],
-+				stopReason: "toolUse",
-+			}),
-+			createMessageEntry({
-+				role: "toolResult",
-+				toolCallId: "tool-call-1",
-+				toolName: "read",
-+				content: [{ type: "text", text: "x".repeat(25_000) }],
-+				isError: false,
-+				timestamp: Date.now(),
-+			}),
-+			createMessageEntry({
-+				role: "toolResult",
-+				toolCallId: "tool-call-2",
-+				toolName: "read",
-+				content: [{ type: "text", text: "y".repeat(25_000) }],
-+				isError: false,
-+				timestamp: Date.now(),
-+			}),
-+		];
-+
-+		const result = findCutPoint(entries, 0, entries.length, 10_000);
-+
-+		expect(result.firstKeptEntryIndex).toBe(3);
-+		expect((entries[result.firstKeptEntryIndex] as SessionMessageEntry).message.role).toBe("assistant");
-+		expect(result.isSplitTurn).toBe(true);
-+		expect(result.turnStartIndex).toBe(2);
-+	});
-+
- 	it("should indicate split turn when cutting at assistant message", () => {
- 		// Create a scenario where we cut at an assistant message mid-turn
- 		const entries: SessionEntry[] = [
-diff --git a/packages/coding-agent/test/credential-print.test.ts b/packages/coding-agent/test/credential-print.test.ts
-index a1ca56d9c7e0d6641fe404fbe652a6ab552bc9de..7f16c5e0cd1ac75163359f9d44a8c2b5ba50095e 100644
---- a/packages/coding-agent/test/credential-print.test.ts
-+++ b/packages/coding-agent/test/credential-print.test.ts
-@@ -7,6 +7,11 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
- import { ModelRuntime } from "../src/core/model-runtime.ts";
- import { main } from "../src/main.ts";
- 
-+const CODEX_ACCESS_TOKEN =
-+	"offline.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoidGVzdC1jb2RleC1hY2NvdW50In19.old";
-+const REFRESHED_CODEX_ACCESS_TOKEN =
-+	"offline.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoidGVzdC1jb2RleC1hY2NvdW50In19.fresh";
-+
- async function createRuntime(credentials: AuthStorage): Promise<ModelRuntime> {
- 	return ModelRuntime.create({
- 		credentials,
-@@ -44,7 +49,7 @@ describe("credential print commands", () => {
- 		const storage = AuthStorage.inMemory({
- 			"openai-codex": {
- 				type: "oauth",
--				access: "old-test-token",
-+				access: CODEX_ACCESS_TOKEN,
- 				refresh: "test-refresh-token",
- 				expires: 0,
- 			},
-@@ -52,7 +57,7 @@ describe("credential print commands", () => {
- 		const runtime = await createRuntime(storage);
- 		const refresh = vi.fn(async () => ({
- 			type: "oauth" as const,
--			access: "fresh-test-token",
-+			access: REFRESHED_CODEX_ACCESS_TOKEN,
- 			refresh: "test-refresh-token",
- 			expires: Date.now() + 60 * 60 * 1000,
- 		}));
-@@ -61,9 +66,11 @@ describe("credential print commands", () => {
- 		oauth.refresh = refresh;
- 		const args = parseArgs(["--provider", "openai-codex"]);
- 
--		await expect(resolveCredentialForPrint(args, runtime, "bearer_token")).resolves.toBe("fresh-test-token");
-+		await expect(resolveCredentialForPrint(args, runtime, "bearer_token")).resolves.toBe(
-+			REFRESHED_CODEX_ACCESS_TOKEN,
-+		);
- 		expect(refresh).toHaveBeenCalledOnce();
--		expect(await storage.read("openai-codex")).toMatchObject({ access: "fresh-test-token" });
-+		expect(await storage.read("openai-codex")).toMatchObject({ access: REFRESHED_CODEX_ACCESS_TOKEN });
- 	});
- 
- 	test("reports unknown auth options like package commands", async () => {
-@@ -89,7 +96,7 @@ describe("credential print commands", () => {
- 			AuthStorage.inMemory({
- 				"openai-codex": {
- 					type: "oauth",
--					access: "test-token-not-to-be-printed",
-+					access: CODEX_ACCESS_TOKEN,
- 					refresh: "test-refresh-token",
- 					expires: Date.now() + 60 * 60 * 1000,
- 				},
-diff --git a/packages/coding-agent/test/extensions-runner.test.ts b/packages/coding-agent/test/extensions-runner.test.ts
-index 70f06a3cf64d88e0186bc2afa8a53e936f46a17f..5c5ad0cd1bef55288e8de969916996ca1fb7390c 100644
---- a/packages/coding-agent/test/extensions-runner.test.ts
-+++ b/packages/coding-agent/test/extensions-runner.test.ts
-@@ -80,6 +80,7 @@ describe("ExtensionRunner", () => {
- 		setLabel: () => {},
- 		getActiveTools: () => [],
- 		getAllTools: () => [],
-+		getToolDefinition: () => undefined,
- 		setActiveTools: () => {},
- 		refreshTools: () => {},
- 		getCommands: () => [],
-@@ -118,6 +119,107 @@ describe("ExtensionRunner", () => {
- 		});
- 	});
- 
-+	it("awaits one shared shutdown emission before callers invalidate extension contexts", async () => {
-+		const extensionPath = path.join(extensionsDir, "async-shutdown.ts");
-+		fs.writeFileSync(
-+			extensionPath,
-+			`export default function(pi) {
-+	pi.on("session_shutdown", async (_event, ctx) => {
-+		await Promise.resolve();
-+		ctx.sessionManager.getSessionId();
-+	});
-+}`,
-+		);
-+		const result = await loadExtensions([extensionPath], tempDir);
-+		const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
-+		const errors: string[] = [];
-+		runner.onError((error) => errors.push(error.error));
-+
-+		const first = runner.emitSessionShutdown({ type: "session_shutdown", reason: "quit" });
-+		const second = runner.emitSessionShutdown({ type: "session_shutdown", reason: "quit" });
-+		expect(second).toBe(first);
-+		await first;
-+		runner.invalidate();
-+
-+		expect(await second).toBe(true);
-+		expect(errors).toEqual([]);
-+	});
-+
-+	it("rejects duplicate context-handler ids from separate extensions before session startup", async () => {
-+		const firstPath = path.join(extensionsDir, "first-context-handler.ts");
-+		const secondPath = path.join(extensionsDir, "second-context-handler.ts");
-+		for (const extensionPath of [firstPath, secondPath]) {
-+			fs.writeFileSync(
-+				extensionPath,
-+				`export default function(pi) {
-+	pi.registerContextHandler("astra-remote", 1);
-+}`,
-+			);
-+		}
-+
-+		const result = await loadExtensions([firstPath, secondPath], tempDir);
-+		expect(
-+			() => new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry),
-+		).toThrow('Context handler "astra-remote" is registered by both');
-+	});
-+
-+	it("rejects a duplicate context handler registered after runner construction", async () => {
-+		const firstPath = path.join(extensionsDir, "late-context-handler.ts");
-+		const secondPath = path.join(extensionsDir, "existing-context-handler.ts");
-+		fs.writeFileSync(
-+			firstPath,
-+			`export default function(pi) {
-+	pi.registerContextHandler("first", 1);
-+	pi.on("session_start", () => pi.registerContextHandler("astra-remote", 1));
-+}`,
-+		);
-+		fs.writeFileSync(
-+			secondPath,
-+			`export default function(pi) {
-+	pi.registerContextHandler("astra-remote", 1);
-+}`,
-+		);
-+
-+		const result = await loadExtensions([firstPath, secondPath], tempDir);
-+		const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
-+		await runner.emit({ type: "session_start", reason: "startup" });
-+
-+		expect(() => runner.assertContextHandler("astra-remote", 1)).toThrow(
-+			'Context handler "astra-remote" is registered by both',
-+		);
-+	});
-+
-+	it("uses a same-version live context-handler replacement for readiness, model checks, and projection validation", async () => {
-+		const extensionPath = path.join(extensionsDir, "replace-context-handler.ts");
-+		fs.writeFileSync(
-+			extensionPath,
-+			`export default function(pi) {
-+	pi.registerContextHandler("astra-remote", 1, () => { throw new Error("initial readiness"); });
-+	pi.on("session_start", () => pi.registerContextHandler(
-+		"astra-remote",
-+		1,
-+		() => {},
-+		(model) => model.id === "selected",
-+		() => { throw new Error("replacement projection"); },
-+	));
-+}`,
-+		);
-+
-+		const result = await loadExtensions([extensionPath], tempDir);
-+		const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
-+		await runner.emit({ type: "session_start", reason: "startup" });
-+		sessionManager.appendCustomEntry("pi.required-context-handler", {
-+			protocol: 1,
-+			handler: "astra-remote",
-+			version: 1,
-+		});
-+
-+		expect(() => runner.assertContextHandler("astra-remote", 1)).not.toThrow();
-+		expect(runner.hasModelContextHandlers({ id: "selected" } as never)).toBe(true);
-+		expect(() => runner.assertModelContextHandlers({ id: "selected" } as never)).not.toThrow();
-+		expect(() => runner.assertRequiredContextProjection([], [])).toThrow("replacement projection");
-+	});
-+
- 	describe("project_trust", () => {
- 		it("continues past undecided handlers and returns the first yes/no decision", async () => {
- 			const undecidedPath = path.join(extensionsDir, "undecided.ts");
-diff --git a/packages/coding-agent/test/suite/agent-session-model-extension.test.ts b/packages/coding-agent/test/suite/agent-session-model-extension.test.ts
-index f024a67d15150283131bd33d53dcc2f6d39e58c4..adee7d8db11de4d9da1d3502301ab69bb85f0d20 100644
---- a/packages/coding-agent/test/suite/agent-session-model-extension.test.ts
-+++ b/packages/coding-agent/test/suite/agent-session-model-extension.test.ts
-@@ -1,3 +1,4 @@
-+import assert from "node:assert/strict";
- import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
- import { fauxAssistantMessage, fauxToolCall, type Model, type Usage } from "@earendil-works/pi-ai";
- import { Type } from "typebox";
-@@ -46,6 +47,94 @@ describe("AgentSession model and extension characterization", () => {
- 		expect(harness.settingsManager.getDefaultModel()).toBeUndefined();
- 	});
- 
-+	it.each(["set", "available-cycle", "scoped-cycle"] as const)(
-+		"keeps ordinary %s observers after committed model and changed thinking state",
-+		async (selection) => {
-+			let harness: Harness | undefined;
-+			let observed:
-+				| { modelEntry: boolean; thinkingLevel: ThinkingLevel | undefined; defaultModel: string | undefined }
-+				| undefined;
-+			harness = await createHarness({
-+				models: [
-+					{ id: "faux-1", name: "One", reasoning: true },
-+					{ id: "faux-2", name: "Two", reasoning: true },
-+				],
-+				extensionFactories: [
-+					(pi) => {
-+						pi.on("model_select", async (event) => {
-+							assert(harness);
-+							observed = {
-+								modelEntry: harness.sessionManager
-+									.getEntries()
-+									.some((entry) => entry.type === "model_change" && entry.modelId === event.model.id),
-+								thinkingLevel: harness.session.thinkingLevel,
-+								defaultModel: harness.settingsManager.getDefaultModel(),
-+							};
-+						});
-+					},
-+				],
-+			});
-+			harnesses.push(harness);
-+
-+			const next = harness.getModel("faux-2");
-+			assert(next);
-+			harness.session.setThinkingLevel("high");
-+			harness.settingsManager.setModelThinkingLevel("faux", "faux-2", "low");
-+			if (selection === "scoped-cycle")
-+				harness.session.setScopedModels([{ model: harness.getModel() }, { model: next }]);
-+			if (selection === "set") await harness.session.setModel(next, { persist: true });
-+			else await harness.session.cycleModel("forward", { persist: true });
-+
-+			expect(observed).toEqual({ modelEntry: true, thinkingLevel: "low", defaultModel: "faux-2" });
-+		},
-+	);
-+
-+	it.each(["set", "available-cycle", "scoped-cycle"] as const)(
-+		"rolls back failed required-model %s activation before persisting",
-+		async (selection) => {
-+			let ready = false;
-+			const harness = await createHarness({
-+				models: [
-+					{ id: "faux-1", name: "One", reasoning: true },
-+					{ id: "faux-2", name: "Two", reasoning: true },
-+				],
-+				extensionFactories: [
-+					(pi) => {
-+						pi.registerContextHandler(
-+							"model-test",
-+							1,
-+							() => {
-+								if (!ready) throw new Error("activation not ready");
-+							},
-+							(model) => model.id === "faux-2",
-+						);
-+					},
-+				],
-+			});
-+			harnesses.push(harness);
-+			const previous = harness.getModel();
-+			const next = harness.getModel("faux-2");
-+			assert(next);
-+			if (selection === "scoped-cycle") harness.session.setScopedModels([{ model: previous }, { model: next }]);
-+			const select = (): Promise<unknown> =>
-+				selection === "set"
-+					? harness.session.setModel(next, { persist: true })
-+					: harness.session.cycleModel("forward", { persist: true });
-+			await expect(select()).rejects.toThrow("activation not ready");
-+			expect(harness.session.model).toBe(previous);
-+			expect(
-+				harness.sessionManager
-+					.getEntries()
-+					.some((entry) => entry.type === "model_change" && entry.modelId === next.id),
-+			).toBe(false);
-+			expect(harness.settingsManager.getDefaultModel()).toBeUndefined();
-+			ready = true;
-+			await select();
-+			expect(harness.session.model).toMatchObject({ id: next.id, provider: next.provider });
-+			expect(harness.settingsManager.getDefaultModel()).toBe(next.id);
-+		},
-+	);
-+
- 	it("only persists model and thinking defaults when requested", async () => {
- 		const harness = await createHarness({
- 			models: [
-diff --git a/packages/coding-agent/src/core/context-handler-requirement.ts b/packages/coding-agent/src/core/context-handler-requirement.ts
-new file mode 100644
-index 000000000..30d0dc57c
---- /dev/null
-+++ b/packages/coding-agent/src/core/context-handler-requirement.ts
-@@ -0,0 +1,43 @@
-+import type { SessionEntry } from "./session-manager.ts";
-+
-+export const REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE = "pi.required-context-handler";
-+
-+export interface RequiredContextHandler {
-+	readonly handler: string;
-+	readonly version: number;
-+}
-+
-+const HANDLER_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
-+
-+function parseRequirement(value: unknown): RequiredContextHandler {
-+	if (!value || typeof value !== "object" || Array.isArray(value)) {
-+		throw new Error("Malformed required context-handler state");
-+	}
-+	const record = value as Record<string, unknown>;
-+	if (
-+		record["protocol"] !== 1 ||
-+		typeof record["handler"] !== "string" ||
-+		!HANDLER_ID_PATTERN.test(record["handler"]) ||
-+		!Number.isInteger(record["version"]) ||
-+		(record["version"] as number) < 1
-+	) {
-+		throw new Error("Malformed required context-handler state");
-+	}
-+	return { handler: record["handler"], version: record["version"] as number };
-+}
-+
-+/** Returns the single persisted context handler requirement, if the session has one. */
-+export function getRequiredContextHandler(entries: readonly SessionEntry[]): RequiredContextHandler | undefined {
-+	let requirement: RequiredContextHandler | undefined;
-+	for (const entry of entries) {
-+		if (entry.type !== "custom" || entry.customType !== REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE) {
-+			continue;
-+		}
-+		const parsed = parseRequirement(entry.data);
-+		if (requirement && (requirement.handler !== parsed.handler || requirement.version !== parsed.version)) {
-+			throw new Error("Conflicting required context-handler state");
-+		}
-+		requirement = parsed;
-+	}
-+	return requirement;
-+}
 diff --git a/packages/coding-agent/test/agent-session-required-context-handler.test.ts b/packages/coding-agent/test/agent-session-required-context-handler.test.ts
 new file mode 100644
 index 000000000..fb1f3a427
@@ -4185,6 +4084,349 @@ index 000000000..ffc7feeb2
 +		expect(restarted.errors).toEqual([]);
 +	});
 +});
+diff --git a/packages/coding-agent/test/auth-check.test.ts b/packages/coding-agent/test/auth-check.test.ts
+index 5f1ce6327..5159f34f4 100644
+--- a/packages/coding-agent/test/auth-check.test.ts
++++ b/packages/coding-agent/test/auth-check.test.ts
+@@ -10,6 +10,10 @@ import { AuthStorage, ReadOnlyAuthStorage } from "../src/core/auth-storage.ts";
+ import { ModelRuntime } from "../src/core/model-runtime.ts";
+ 
+ const tempDir = join(tmpdir(), `pi-test-auth-check-${Date.now()}-${Math.random().toString(36).slice(2)}`);
++const CODEX_ACCESS_TOKEN =
++	"offline.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoidGVzdC1jb2RleC1hY2NvdW50In19.old";
++const REFRESHED_CODEX_ACCESS_TOKEN =
++	"offline.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoidGVzdC1jb2RleC1hY2NvdW50In19.fresh";
+ 
+ async function createRuntime(credentials: AuthStorage | ReadOnlyAuthStorage): Promise<ModelRuntime> {
+ 	return ModelRuntime.create({
+@@ -62,7 +66,7 @@ describe("auth check command", () => {
+ 		);
+ 
+ 		const credentials = AuthStorage.inMemory({
+-			"openai-codex": { type: "oauth", access: "old-token", refresh: "refresh-token", expires: 0 },
++			"openai-codex": { type: "oauth", access: CODEX_ACCESS_TOKEN, refresh: "refresh-token", expires: 0 },
+ 		});
+ 		const oauthRuntime = await createRuntime(credentials);
+ 		const oauth = oauthRuntime.getProvider("openai-codex")?.auth.oauth;
+@@ -71,21 +75,21 @@ describe("auth check command", () => {
+ 		oauth.refresh = refresh;
+ 
+ 		await expect(getProviderCredential("openai-codex", oauthRuntime, credentials, { refresh: false })).resolves.toBe(
+-			"old-token",
++			CODEX_ACCESS_TOKEN,
+ 		);
+ 		expect(refresh).not.toHaveBeenCalled();
+ 	});
+ 
+ 	test("refreshes OAuth by default", async () => {
+ 		const credentials = AuthStorage.inMemory({
+-			"openai-codex": { type: "oauth", access: "old-token", refresh: "refresh-token", expires: 0 },
++			"openai-codex": { type: "oauth", access: CODEX_ACCESS_TOKEN, refresh: "refresh-token", expires: 0 },
+ 		});
+ 		const runtime = await createRuntime(credentials);
+ 		const oauth = runtime.getProvider("openai-codex")?.auth.oauth;
+ 		if (!oauth) throw new Error("OpenAI Codex OAuth provider is not registered");
+ 		const refresh = vi.fn(async () => ({
+ 			type: "oauth" as const,
+-			access: "fresh-token",
++			access: REFRESHED_CODEX_ACCESS_TOKEN,
+ 			refresh: "refresh-token",
+ 			expires: Date.now() + 60 * 60 * 1000,
+ 		}));
+diff --git a/packages/coding-agent/test/compaction-extensions.test.ts b/packages/coding-agent/test/compaction-extensions.test.ts
+index 7b8f8e627..6825a0ade 100644
+--- a/packages/coding-agent/test/compaction-extensions.test.ts
++++ b/packages/coding-agent/test/compaction-extensions.test.ts
+@@ -76,6 +76,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
+ 			path: "test-extension",
+ 			resolvedPath: "/test/test-extension.ts",
+ 			sourceInfo: createSyntheticSourceInfo("<test:test-extension>", { source: "test" }),
++			contextHandlers: new Map(),
+ 			handlers,
+ 			tools: new Map(),
+ 			messageRenderers: new Map(),
+@@ -233,6 +234,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
+ 			path: "throwing-extension",
+ 			resolvedPath: "/test/throwing-extension.ts",
+ 			sourceInfo: createSyntheticSourceInfo("<test:throwing-extension>", { source: "test" }),
++			contextHandlers: new Map(),
+ 			handlers: new Map<string, ((event: any, ctx: any) => Promise<any>)[]>([
+ 				[
+ 					"session_before_compact",
+@@ -282,6 +284,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
+ 			path: "extension1",
+ 			resolvedPath: "/test/extension1.ts",
+ 			sourceInfo: createSyntheticSourceInfo("<test:extension1>", { source: "test" }),
++			contextHandlers: new Map(),
+ 			handlers: new Map<string, ((event: any, ctx: any) => Promise<any>)[]>([
+ 				[
+ 					"session_before_compact",
+@@ -313,6 +316,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
+ 			path: "extension2",
+ 			resolvedPath: "/test/extension2.ts",
+ 			sourceInfo: createSyntheticSourceInfo("<test:extension2>", { source: "test" }),
++			contextHandlers: new Map(),
+ 			handlers: new Map<string, ((event: any, ctx: any) => Promise<any>)[]>([
+ 				[
+ 					"session_before_compact",
+diff --git a/packages/coding-agent/test/compaction.test.ts b/packages/coding-agent/test/compaction.test.ts
+index 12c9d0be2..870c1dc26 100644
+--- a/packages/coding-agent/test/compaction.test.ts
++++ b/packages/coding-agent/test/compaction.test.ts
+@@ -333,6 +333,45 @@ describe("findCutPoint", () => {
+ 		expect(result.firstKeptEntryIndex).toBe(0);
+ 	});
+ 
++	it("should retain an oversized tool-call turn from its assistant entry", () => {
++		const entries: SessionEntry[] = [
++			createMessageEntry(createUserMessage("older turn")),
++			createMessageEntry(createAssistantMessage("older response")),
++			createMessageEntry(createUserMessage("current turn")),
++			createMessageEntry({
++				...createAssistantMessage(""),
++				content: [
++					{ type: "toolCall", id: "tool-call-1", name: "read", arguments: { path: "large-file-1" } },
++					{ type: "toolCall", id: "tool-call-2", name: "read", arguments: { path: "large-file-2" } },
++				],
++				stopReason: "toolUse",
++			}),
++			createMessageEntry({
++				role: "toolResult",
++				toolCallId: "tool-call-1",
++				toolName: "read",
++				content: [{ type: "text", text: "x".repeat(25_000) }],
++				isError: false,
++				timestamp: Date.now(),
++			}),
++			createMessageEntry({
++				role: "toolResult",
++				toolCallId: "tool-call-2",
++				toolName: "read",
++				content: [{ type: "text", text: "y".repeat(25_000) }],
++				isError: false,
++				timestamp: Date.now(),
++			}),
++		];
++
++		const result = findCutPoint(entries, 0, entries.length, 10_000);
++
++		expect(result.firstKeptEntryIndex).toBe(3);
++		expect((entries[result.firstKeptEntryIndex] as SessionMessageEntry).message.role).toBe("assistant");
++		expect(result.isSplitTurn).toBe(true);
++		expect(result.turnStartIndex).toBe(2);
++	});
++
+ 	it("should indicate split turn when cutting at assistant message", () => {
+ 		// Create a scenario where we cut at an assistant message mid-turn
+ 		const entries: SessionEntry[] = [
+diff --git a/packages/coding-agent/test/credential-print.test.ts b/packages/coding-agent/test/credential-print.test.ts
+index a1ca56d9c..7f16c5e0c 100644
+--- a/packages/coding-agent/test/credential-print.test.ts
++++ b/packages/coding-agent/test/credential-print.test.ts
+@@ -7,6 +7,11 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
+ import { ModelRuntime } from "../src/core/model-runtime.ts";
+ import { main } from "../src/main.ts";
+ 
++const CODEX_ACCESS_TOKEN =
++	"offline.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoidGVzdC1jb2RleC1hY2NvdW50In19.old";
++const REFRESHED_CODEX_ACCESS_TOKEN =
++	"offline.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoidGVzdC1jb2RleC1hY2NvdW50In19.fresh";
++
+ async function createRuntime(credentials: AuthStorage): Promise<ModelRuntime> {
+ 	return ModelRuntime.create({
+ 		credentials,
+@@ -44,7 +49,7 @@ describe("credential print commands", () => {
+ 		const storage = AuthStorage.inMemory({
+ 			"openai-codex": {
+ 				type: "oauth",
+-				access: "old-test-token",
++				access: CODEX_ACCESS_TOKEN,
+ 				refresh: "test-refresh-token",
+ 				expires: 0,
+ 			},
+@@ -52,7 +57,7 @@ describe("credential print commands", () => {
+ 		const runtime = await createRuntime(storage);
+ 		const refresh = vi.fn(async () => ({
+ 			type: "oauth" as const,
+-			access: "fresh-test-token",
++			access: REFRESHED_CODEX_ACCESS_TOKEN,
+ 			refresh: "test-refresh-token",
+ 			expires: Date.now() + 60 * 60 * 1000,
+ 		}));
+@@ -61,9 +66,11 @@ describe("credential print commands", () => {
+ 		oauth.refresh = refresh;
+ 		const args = parseArgs(["--provider", "openai-codex"]);
+ 
+-		await expect(resolveCredentialForPrint(args, runtime, "bearer_token")).resolves.toBe("fresh-test-token");
++		await expect(resolveCredentialForPrint(args, runtime, "bearer_token")).resolves.toBe(
++			REFRESHED_CODEX_ACCESS_TOKEN,
++		);
+ 		expect(refresh).toHaveBeenCalledOnce();
+-		expect(await storage.read("openai-codex")).toMatchObject({ access: "fresh-test-token" });
++		expect(await storage.read("openai-codex")).toMatchObject({ access: REFRESHED_CODEX_ACCESS_TOKEN });
+ 	});
+ 
+ 	test("reports unknown auth options like package commands", async () => {
+@@ -89,7 +96,7 @@ describe("credential print commands", () => {
+ 			AuthStorage.inMemory({
+ 				"openai-codex": {
+ 					type: "oauth",
+-					access: "test-token-not-to-be-printed",
++					access: CODEX_ACCESS_TOKEN,
+ 					refresh: "test-refresh-token",
+ 					expires: Date.now() + 60 * 60 * 1000,
+ 				},
+diff --git a/packages/coding-agent/test/extensions-runner.test.ts b/packages/coding-agent/test/extensions-runner.test.ts
+index 70f06a3cf..b244004cf 100644
+--- a/packages/coding-agent/test/extensions-runner.test.ts
++++ b/packages/coding-agent/test/extensions-runner.test.ts
+@@ -80,6 +80,7 @@ describe("ExtensionRunner", () => {
+ 		setLabel: () => {},
+ 		getActiveTools: () => [],
+ 		getAllTools: () => [],
++		getToolDefinition: () => undefined,
+ 		setActiveTools: () => {},
+ 		refreshTools: () => {},
+ 		getCommands: () => [],
+@@ -98,6 +99,7 @@ describe("ExtensionRunner", () => {
+ 		shutdown: () => {},
+ 		getContextUsage: () => undefined,
+ 		compact: () => {},
++		requestCompactionBeforeNextTurn: () => false,
+ 		getSystemPrompt: () => "",
+ 		getScopedModels: () => [],
+ 	};
+@@ -118,6 +120,107 @@ describe("ExtensionRunner", () => {
+ 		});
+ 	});
+ 
++	it("awaits one shared shutdown emission before callers invalidate extension contexts", async () => {
++		const extensionPath = path.join(extensionsDir, "async-shutdown.ts");
++		fs.writeFileSync(
++			extensionPath,
++			`export default function(pi) {
++	pi.on("session_shutdown", async (_event, ctx) => {
++		await Promise.resolve();
++		ctx.sessionManager.getSessionId();
++	});
++}`,
++		);
++		const result = await loadExtensions([extensionPath], tempDir);
++		const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
++		const errors: string[] = [];
++		runner.onError((error) => errors.push(error.error));
++
++		const first = runner.emitSessionShutdown({ type: "session_shutdown", reason: "quit" });
++		const second = runner.emitSessionShutdown({ type: "session_shutdown", reason: "quit" });
++		expect(second).toBe(first);
++		await first;
++		runner.invalidate();
++
++		expect(await second).toBe(true);
++		expect(errors).toEqual([]);
++	});
++
++	it("rejects duplicate context-handler ids from separate extensions before session startup", async () => {
++		const firstPath = path.join(extensionsDir, "first-context-handler.ts");
++		const secondPath = path.join(extensionsDir, "second-context-handler.ts");
++		for (const extensionPath of [firstPath, secondPath]) {
++			fs.writeFileSync(
++				extensionPath,
++				`export default function(pi) {
++	pi.registerContextHandler("astra-remote", 1);
++}`,
++			);
++		}
++
++		const result = await loadExtensions([firstPath, secondPath], tempDir);
++		expect(
++			() => new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry),
++		).toThrow('Context handler "astra-remote" is registered by both');
++	});
++
++	it("rejects a duplicate context handler registered after runner construction", async () => {
++		const firstPath = path.join(extensionsDir, "late-context-handler.ts");
++		const secondPath = path.join(extensionsDir, "existing-context-handler.ts");
++		fs.writeFileSync(
++			firstPath,
++			`export default function(pi) {
++	pi.registerContextHandler("first", 1);
++	pi.on("session_start", () => pi.registerContextHandler("astra-remote", 1));
++}`,
++		);
++		fs.writeFileSync(
++			secondPath,
++			`export default function(pi) {
++	pi.registerContextHandler("astra-remote", 1);
++}`,
++		);
++
++		const result = await loadExtensions([firstPath, secondPath], tempDir);
++		const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
++		await runner.emit({ type: "session_start", reason: "startup" });
++
++		expect(() => runner.assertContextHandler("astra-remote", 1)).toThrow(
++			'Context handler "astra-remote" is registered by both',
++		);
++	});
++
++	it("uses a same-version live context-handler replacement for readiness, model checks, and projection validation", async () => {
++		const extensionPath = path.join(extensionsDir, "replace-context-handler.ts");
++		fs.writeFileSync(
++			extensionPath,
++			`export default function(pi) {
++	pi.registerContextHandler("astra-remote", 1, () => { throw new Error("initial readiness"); });
++	pi.on("session_start", () => pi.registerContextHandler(
++		"astra-remote",
++		1,
++		() => {},
++		(model) => model.id === "selected",
++		() => { throw new Error("replacement projection"); },
++	));
++}`,
++		);
++
++		const result = await loadExtensions([extensionPath], tempDir);
++		const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
++		await runner.emit({ type: "session_start", reason: "startup" });
++		sessionManager.appendCustomEntry("pi.required-context-handler", {
++			protocol: 1,
++			handler: "astra-remote",
++			version: 1,
++		});
++
++		expect(() => runner.assertContextHandler("astra-remote", 1)).not.toThrow();
++		expect(runner.hasModelContextHandlers({ id: "selected" } as never)).toBe(true);
++		expect(() => runner.assertModelContextHandlers({ id: "selected" } as never)).not.toThrow();
++		expect(() => runner.assertRequiredContextProjection([], [])).toThrow("replacement projection");
++	});
++
+ 	describe("project_trust", () => {
+ 		it("continues past undecided handlers and returns the first yes/no decision", async () => {
+ 			const undecidedPath = path.join(extensionsDir, "undecided.ts");
+@@ -529,6 +632,22 @@ describe("ExtensionRunner", () => {
+ 			expect(ctx.hasUI).toBe(false);
+ 		});
+ 
++		it("requests deferred compaction through ExtensionContext", async () => {
++			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
++			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
++			let requests = 0;
++			runner.bindCore(extensionActions, {
++				...extensionContextActions,
++				requestCompactionBeforeNextTurn: () => {
++					requests++;
++					return true;
++				},
++			});
++
++			expect(runner.createContext().requestCompactionBeforeNextTurn()).toBe(true);
++			expect(requests).toBe(1);
++		});
++
+ 		it("exposes project trust state on ExtensionContext", async () => {
+ 			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+ 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
 diff --git a/packages/coding-agent/test/required-context-handler.test.ts b/packages/coding-agent/test/required-context-handler.test.ts
 new file mode 100644
 index 000000000..1460c9051
@@ -4236,3 +4478,520 @@ index 000000000..1460c9051
 +		).toThrow("Conflicting required context-handler state");
 +	});
 +});
+diff --git a/packages/coding-agent/test/suite/agent-session-compaction.test.ts b/packages/coding-agent/test/suite/agent-session-compaction.test.ts
+index 700b6e610..fbcd6fd64 100644
+--- a/packages/coding-agent/test/suite/agent-session-compaction.test.ts
++++ b/packages/coding-agent/test/suite/agent-session-compaction.test.ts
+@@ -11,6 +11,7 @@ import {
+ import { Type } from "typebox";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+ import { estimateTokens } from "../../src/core/compaction/index.ts";
++import type { CompactionReason } from "../../src/core/extensions/index.ts";
+ import { createHarness, getUserTexts, type Harness } from "./harness.ts";
+ 
+ type SessionWithCompactionInternals = {
+@@ -343,7 +344,7 @@ describe("AgentSession compaction characterization", () => {
+ 
+ 	it("notifies extensions when auto-compaction fails", async () => {
+ 		const failedEvents: Array<{
+-			reason: "manual" | "threshold" | "overflow";
++			reason: CompactionReason;
+ 			errorMessage?: string;
+ 			aborted: boolean;
+ 			willRetry: boolean;
+diff --git a/packages/coding-agent/test/suite/agent-session-model-extension.test.ts b/packages/coding-agent/test/suite/agent-session-model-extension.test.ts
+index f024a67d1..adee7d8db 100644
+--- a/packages/coding-agent/test/suite/agent-session-model-extension.test.ts
++++ b/packages/coding-agent/test/suite/agent-session-model-extension.test.ts
+@@ -1,3 +1,4 @@
++import assert from "node:assert/strict";
+ import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
+ import { fauxAssistantMessage, fauxToolCall, type Model, type Usage } from "@earendil-works/pi-ai";
+ import { Type } from "typebox";
+@@ -46,6 +47,94 @@ describe("AgentSession model and extension characterization", () => {
+ 		expect(harness.settingsManager.getDefaultModel()).toBeUndefined();
+ 	});
+ 
++	it.each(["set", "available-cycle", "scoped-cycle"] as const)(
++		"keeps ordinary %s observers after committed model and changed thinking state",
++		async (selection) => {
++			let harness: Harness | undefined;
++			let observed:
++				| { modelEntry: boolean; thinkingLevel: ThinkingLevel | undefined; defaultModel: string | undefined }
++				| undefined;
++			harness = await createHarness({
++				models: [
++					{ id: "faux-1", name: "One", reasoning: true },
++					{ id: "faux-2", name: "Two", reasoning: true },
++				],
++				extensionFactories: [
++					(pi) => {
++						pi.on("model_select", async (event) => {
++							assert(harness);
++							observed = {
++								modelEntry: harness.sessionManager
++									.getEntries()
++									.some((entry) => entry.type === "model_change" && entry.modelId === event.model.id),
++								thinkingLevel: harness.session.thinkingLevel,
++								defaultModel: harness.settingsManager.getDefaultModel(),
++							};
++						});
++					},
++				],
++			});
++			harnesses.push(harness);
++
++			const next = harness.getModel("faux-2");
++			assert(next);
++			harness.session.setThinkingLevel("high");
++			harness.settingsManager.setModelThinkingLevel("faux", "faux-2", "low");
++			if (selection === "scoped-cycle")
++				harness.session.setScopedModels([{ model: harness.getModel() }, { model: next }]);
++			if (selection === "set") await harness.session.setModel(next, { persist: true });
++			else await harness.session.cycleModel("forward", { persist: true });
++
++			expect(observed).toEqual({ modelEntry: true, thinkingLevel: "low", defaultModel: "faux-2" });
++		},
++	);
++
++	it.each(["set", "available-cycle", "scoped-cycle"] as const)(
++		"rolls back failed required-model %s activation before persisting",
++		async (selection) => {
++			let ready = false;
++			const harness = await createHarness({
++				models: [
++					{ id: "faux-1", name: "One", reasoning: true },
++					{ id: "faux-2", name: "Two", reasoning: true },
++				],
++				extensionFactories: [
++					(pi) => {
++						pi.registerContextHandler(
++							"model-test",
++							1,
++							() => {
++								if (!ready) throw new Error("activation not ready");
++							},
++							(model) => model.id === "faux-2",
++						);
++					},
++				],
++			});
++			harnesses.push(harness);
++			const previous = harness.getModel();
++			const next = harness.getModel("faux-2");
++			assert(next);
++			if (selection === "scoped-cycle") harness.session.setScopedModels([{ model: previous }, { model: next }]);
++			const select = (): Promise<unknown> =>
++				selection === "set"
++					? harness.session.setModel(next, { persist: true })
++					: harness.session.cycleModel("forward", { persist: true });
++			await expect(select()).rejects.toThrow("activation not ready");
++			expect(harness.session.model).toBe(previous);
++			expect(
++				harness.sessionManager
++					.getEntries()
++					.some((entry) => entry.type === "model_change" && entry.modelId === next.id),
++			).toBe(false);
++			expect(harness.settingsManager.getDefaultModel()).toBeUndefined();
++			ready = true;
++			await select();
++			expect(harness.session.model).toMatchObject({ id: next.id, provider: next.provider });
++			expect(harness.settingsManager.getDefaultModel()).toBe(next.id);
++		},
++	);
++
+ 	it("only persists model and thinking defaults when requested", async () => {
+ 		const harness = await createHarness({
+ 			models: [
+diff --git a/packages/coding-agent/test/suite/agent-session-queue.test.ts b/packages/coding-agent/test/suite/agent-session-queue.test.ts
+index a1c3fd8a1..a29bc95a1 100644
+--- a/packages/coding-agent/test/suite/agent-session-queue.test.ts
++++ b/packages/coding-agent/test/suite/agent-session-queue.test.ts
+@@ -2,12 +2,13 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
+ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+ import { Type } from "typebox";
+-import { afterEach, describe, expect, it } from "vitest";
++import { afterEach, describe, expect, it, vi } from "vitest";
+ import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.ts";
+ 
+ async function createWaitingHarness(
+ 	options: {
+ 		tools?: AgentTool[];
++		withConfiguredAuth?: boolean;
+ 		extensionFactories?: Harness["session"]["extensionRunner"] extends never
+ 			? never
+ 			: Array<(pi: ExtensionAPI) => void>;
+@@ -37,6 +38,7 @@ async function createWaitingHarness(
+ 	};
+ 	const harness = await createHarness({
+ 		tools: [waitTool, ...(options.tools ?? [])],
++		withConfiguredAuth: options.withConfiguredAuth,
+ 		extensionFactories: options.extensionFactories,
+ 	});
+ 
+@@ -57,7 +59,329 @@ async function createWaitingHarness(
+ 	};
+ }
+ 
++function seedDeferredCompactionHistory(harness: Harness): void {
++	harness.settingsManager.applyOverrides({ compaction: { keepRecentTokens: 1 } });
++	const timestamp = Date.now() - 1_000;
++	harness.sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "old context" }], timestamp });
++	harness.sessionManager.appendMessage({ ...fauxAssistantMessage("old response"), timestamp: timestamp + 1 });
++	harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
++}
++
+ describe("AgentSession queue characterization", () => {
++	it("applies one ready extension compaction after the current turn before queued steering and follow-up delivery", async () => {
++		let compactionCount = 0;
++		let requested = false;
++		let requestAccepted = false;
++		let checkpointRequestAccepted = true;
++		const waiting = await createWaitingHarness({
++			extensionFactories: [
++				(pi) => {
++					pi.on("turn_end", (_event, ctx) => {
++						if (requested) return;
++						requested = true;
++						requestAccepted = ctx.requestCompactionBeforeNextTurn();
++						ctx.requestCompactionBeforeNextTurn();
++					});
++					pi.on("session_before_compact", (event, ctx) => {
++						checkpointRequestAccepted = ctx.requestCompactionBeforeNextTurn();
++						compactionCount++;
++						return {
++							compaction: {
++								summary: "ready extension summary",
++								firstKeptEntryId: event.preparation.firstKeptEntryId,
++								tokensBefore: event.preparation.tokensBefore,
++							},
++						};
++					});
++				},
++			],
++		});
++		harnesses.push(waiting.harness);
++		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
++		harness.settingsManager.applyOverrides({ compaction: { keepRecentTokens: 1 } });
++		const historyTimestamp = Date.now() - 1_000;
++		harness.sessionManager.appendMessage({
++			role: "user",
++			content: [{ type: "text", text: "old context" }],
++			timestamp: historyTimestamp,
++		});
++		harness.sessionManager.appendMessage({ ...fauxAssistantMessage("old response"), timestamp: historyTimestamp + 1 });
++		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
++		let steeringContext = "";
++		let followUpContext = "";
++		harness.setResponses([
++			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
++			(context) => {
++				steeringContext = JSON.stringify(context.messages);
++				return fauxAssistantMessage("steering response");
++			},
++			(context) => {
++				followUpContext = JSON.stringify(context.messages);
++				return fauxAssistantMessage("follow-up response");
++			},
++		]);
++
++		await waitForToolStart;
++		await harness.session.steer("steer next");
++		await harness.session.followUp("follow up next");
++		releaseToolExecution();
++		await promptPromise;
++
++		expect(requestAccepted).toBe(true);
++		expect(checkpointRequestAccepted).toBe(false);
++		expect(compactionCount).toBe(1);
++		const steeringSummaryIndex = steeringContext.indexOf("ready extension summary");
++		const steeringIndex = steeringContext.indexOf("steer next");
++		const followUpSummaryIndex = followUpContext.indexOf("ready extension summary");
++		const followUpSteeringIndex = followUpContext.indexOf("steer next");
++		const followUpIndex = followUpContext.indexOf("follow up next");
++		expect(steeringSummaryIndex).toBeGreaterThanOrEqual(0);
++		expect(steeringIndex).toBeGreaterThanOrEqual(0);
++		expect(followUpSummaryIndex).toBeGreaterThanOrEqual(0);
++		expect(followUpSteeringIndex).toBeGreaterThanOrEqual(0);
++		expect(followUpIndex).toBeGreaterThanOrEqual(0);
++		expect(steeringSummaryIndex).toBeLessThan(steeringIndex);
++		expect(followUpSummaryIndex).toBeLessThan(followUpSteeringIndex);
++		expect(followUpSteeringIndex).toBeLessThan(followUpIndex);
++		expect(getUserTexts(harness)).toEqual(["steer next", "follow up next"]);
++	});
++
++	it("rebuilds natural tool-result continuation context after deferred compaction", async () => {
++		let compactionCount = 0;
++		let requested = false;
++		const waiting = await createWaitingHarness({
++			extensionFactories: [
++				(pi) => {
++					pi.on("turn_end", (_event, ctx) => {
++						if (requested) return;
++						requested = true;
++						ctx.requestCompactionBeforeNextTurn();
++					});
++					pi.on("session_before_compact", (event) => {
++						compactionCount++;
++						return {
++							compaction: {
++								summary: "natural continuation summary",
++								firstKeptEntryId: event.preparation.firstKeptEntryId,
++								tokensBefore: event.preparation.tokensBefore,
++							},
++						};
++					});
++				},
++			],
++		});
++		harnesses.push(waiting.harness);
++		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
++		harness.settingsManager.applyOverrides({ compaction: { keepRecentTokens: 1 } });
++		const historyTimestamp = Date.now() - 1_000;
++		harness.sessionManager.appendMessage({
++			role: "user",
++			content: [{ type: "text", text: "old context" }],
++			timestamp: historyTimestamp,
++		});
++		harness.sessionManager.appendMessage({ ...fauxAssistantMessage("old response"), timestamp: historyTimestamp + 1 });
++		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
++		let nextProviderContext = "";
++		harness.setResponses([
++			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
++			(context) => {
++				nextProviderContext = JSON.stringify(context.messages);
++				return fauxAssistantMessage("continued after compaction");
++			},
++		]);
++
++		await waitForToolStart;
++		releaseToolExecution();
++		await promptPromise;
++
++		expect(compactionCount).toBe(1);
++		expect(nextProviderContext).toContain("natural continuation summary");
++		expect(nextProviderContext).not.toContain("old context");
++		expect(harness.getPendingResponseCount()).toBe(0);
++	});
++
++	it("continues a natural tool-result turn when deferred compaction is cancelled", async () => {
++		let requested = false;
++		const waiting = await createWaitingHarness({
++			extensionFactories: [
++				(pi) => {
++					pi.on("turn_end", (_event, ctx) => {
++						if (requested) return;
++						requested = true;
++						ctx.requestCompactionBeforeNextTurn();
++					});
++					pi.on("session_before_compact", () => ({ cancel: true }));
++				},
++			],
++		});
++		harnesses.push(waiting.harness);
++		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
++		harness.settingsManager.applyOverrides({ compaction: { keepRecentTokens: 1 } });
++		const historyTimestamp = Date.now() - 1_000;
++		harness.sessionManager.appendMessage({
++			role: "user",
++			content: [{ type: "text", text: "old context" }],
++			timestamp: historyTimestamp,
++		});
++		harness.sessionManager.appendMessage({ ...fauxAssistantMessage("old response"), timestamp: historyTimestamp + 1 });
++		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
++		let nextProviderContext = "";
++		harness.setResponses([
++			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
++			(context) => {
++				nextProviderContext = JSON.stringify(context.messages);
++				return fauxAssistantMessage("continued after cancellation");
++			},
++		]);
++
++		await waitForToolStart;
++		releaseToolExecution();
++		await promptPromise;
++
++		expect(requested).toBe(true);
++		expect(nextProviderContext).not.toContain("natural continuation summary");
++		expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
++		expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({ aborted: true });
++		expect(harness.getPendingResponseCount()).toBe(0);
++	});
++
++	it("coalesces extension-provided deferred compaction without resolving summarization auth", async () => {
++		let compactionCount = 0;
++		let requested = false;
++		const waiting = await createWaitingHarness({
++			extensionFactories: [
++				(pi) => {
++					pi.on("turn_end", (_event, ctx) => {
++						if (requested) return;
++						requested = true;
++						ctx.requestCompactionBeforeNextTurn();
++						ctx.requestCompactionBeforeNextTurn();
++					});
++					pi.on("session_before_compact", (event) => {
++						compactionCount++;
++						return {
++							compaction: {
++								summary: "extension-only deferred summary",
++								firstKeptEntryId: event.preparation.firstKeptEntryId,
++								tokensBefore: event.preparation.tokensBefore,
++							},
++						};
++					});
++				},
++			],
++		});
++		harnesses.push(waiting.harness);
++		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
++		harness.settingsManager.applyOverrides({ compaction: { keepRecentTokens: 1 } });
++		const historyTimestamp = Date.now() - 1_000;
++		harness.sessionManager.appendMessage({
++			role: "user",
++			content: [{ type: "text", text: "old context" }],
++			timestamp: historyTimestamp,
++		});
++		harness.sessionManager.appendMessage({ ...fauxAssistantMessage("old response"), timestamp: historyTimestamp + 1 });
++		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
++		harness.setResponses([
++			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
++			fauxAssistantMessage("continued with extension summary"),
++		]);
++
++		await waitForToolStart;
++		vi.spyOn(
++			harness.session as unknown as { _getSummarizationRequestAuth: () => Promise<never> },
++			"_getSummarizationRequestAuth",
++		).mockRejectedValue(new Error("summarization auth must not resolve for an extension summary"));
++		releaseToolExecution();
++		await promptPromise;
++
++		expect(compactionCount).toBe(1);
++		expect(harness.session.messages.some((message) => message.role === "compactionSummary")).toBe(true);
++	});
++
++	it("clears a deferred request before retrying an error turn", async () => {
++		let requestAccepted = false;
++		const harness = await createHarness({
++			settings: { compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 }, retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 } },
++			extensionFactories: [(pi) => {
++				pi.on("turn_end", (event, ctx) => {
++					if (event.message.role === "assistant" && event.message.stopReason === "error") requestAccepted = ctx.requestCompactionBeforeNextTurn();
++				});
++				pi.on("session_before_compact", (event) => ({ compaction: { summary: "stale retry summary", firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore } }));
++			}],
++		});
++		harnesses.push(harness);
++		seedDeferredCompactionHistory(harness);
++		harness.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded" }), fauxAssistantMessage("recovered")]);
++		await harness.session.prompt("retry run");
++		expect(requestAccepted).toBe(true);
++		expect(harness.eventsOfType("compaction_start")).toEqual([]);
++		expect(getAssistantTexts(harness)).toContain("recovered");
++	});
++
++	it("rejects deferred requests after agent_end", async () => {
++		let requestAccepted = true;
++		const harness = await createHarness({ extensionFactories: [(pi) => pi.on("agent_end", (_event, ctx) => { requestAccepted = ctx.requestCompactionBeforeNextTurn(); })] });
++		harnesses.push(harness);
++		harness.setResponses([fauxAssistantMessage("done")]);
++		await harness.session.prompt("hello");
++		expect(requestAccepted).toBe(false);
++		expect(harness.eventsOfType("compaction_start")).toEqual([]);
++	});
++
++	it("preserves queued steering and follow-up after deferred compaction cancellation", async () => {
++		let requested = false;
++		const waiting = await createWaitingHarness({ extensionFactories: [(pi) => {
++			pi.on("turn_end", (_event, ctx) => { if (!requested) { requested = true; ctx.requestCompactionBeforeNextTurn(); } });
++			pi.on("session_before_compact", () => ({ cancel: true }));
++		}] });
++		harnesses.push(waiting.harness);
++		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
++		seedDeferredCompactionHistory(harness);
++		harness.setResponses([fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }), fauxAssistantMessage("steer handled"), fauxAssistantMessage("follow-up handled")]);
++		await waitForToolStart;
++		await harness.session.steer("steer after cancel");
++		await harness.session.followUp("follow-up after cancel");
++		releaseToolExecution();
++		await promptPromise;
++		expect(getUserTexts(harness).slice(-2)).toEqual(["steer after cancel", "follow-up after cancel"]);
++		expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({ aborted: true });
++	});
++
++	it("preserves queued steering and follow-up after deferred compaction failure", async () => {
++		let requested = false;
++		const waiting = await createWaitingHarness({ extensionFactories: [(pi) => pi.on("turn_end", (_event, ctx) => { if (!requested) { requested = true; ctx.requestCompactionBeforeNextTurn(); } })] });
++		harnesses.push(waiting.harness);
++		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
++		seedDeferredCompactionHistory(harness);
++		harness.setResponses([fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }), fauxAssistantMessage("steer handled"), fauxAssistantMessage("follow-up handled")]);
++		await waitForToolStart;
++		vi.spyOn(harness.session as unknown as { _runDefaultCompaction: () => Promise<never> }, "_runDefaultCompaction").mockRejectedValue(new Error("deferred summary failed"));
++		await harness.session.steer("steer after failure");
++		await harness.session.followUp("follow-up after failure");
++		releaseToolExecution();
++		await promptPromise;
++		expect(getUserTexts(harness).slice(-2)).toEqual(["steer after failure", "follow-up after failure"]);
++		expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({ errorMessage: "Deferred compaction failed: deferred summary failed" });
++	});
++
++	it("does not append deferred compaction after the active run aborts", async () => {
++		let requested = false;
++		const waiting = await createWaitingHarness({ extensionFactories: [(pi) => {
++			pi.on("turn_end", (_event, ctx) => { if (!requested) { requested = true; ctx.requestCompactionBeforeNextTurn(); } });
++			pi.on("session_before_compact", (event) => ({ compaction: { summary: "aborted deferred summary", firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore } }));
++		}] });
++		harnesses.push(waiting.harness);
++		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
++		seedDeferredCompactionHistory(harness);
++		harness.session.subscribe((event) => { if (event.type === "compaction_start" && event.reason === "deferred") void harness.session.abort(); });
++		harness.setResponses([fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" })]);
++		await waitForToolStart;
++		releaseToolExecution();
++		await promptPromise;
++		expect(harness.session.messages.some((message) => message.role === "compactionSummary")).toBe(false);
++		expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({ aborted: true });
++	});
++
+ 	const harnesses: Harness[] = [];
+ 
+ 	afterEach(() => {
+diff --git a/packages/coding-agent/test/suite/regressions/5217-compaction-reason.test.ts b/packages/coding-agent/test/suite/regressions/5217-compaction-reason.test.ts
+index 9af206fe3..869c27f60 100644
+--- a/packages/coding-agent/test/suite/regressions/5217-compaction-reason.test.ts
++++ b/packages/coding-agent/test/suite/regressions/5217-compaction-reason.test.ts
+@@ -1,15 +1,16 @@
+ import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+ import { afterEach, describe, expect, it } from "vitest";
+ import type { ExtensionFactory } from "../../../src/index.ts";
++import type { CompactionReason } from "../../../src/core/extensions/index.ts";
+ import { createHarness, type Harness } from "../harness.ts";
+ 
+ type SessionWithCompactionInternals = {
+-	_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<boolean>;
++	_runAutoCompaction: (reason: Exclude<CompactionReason, "manual">, willRetry: boolean) => Promise<boolean>;
+ };
+ 
+ interface RecordedCompactionEvent {
+ 	type: "session_before_compact" | "session_compact";
+-	reason: "manual" | "threshold" | "overflow";
++	reason: CompactionReason;
+ 	willRetry: boolean;
+ }
+ 
+diff --git a/packages/coding-agent/test/trigger-compact-extension.test.ts b/packages/coding-agent/test/trigger-compact-extension.test.ts
+index 930769f37..86d3938ab 100644
+--- a/packages/coding-agent/test/trigger-compact-extension.test.ts
++++ b/packages/coding-agent/test/trigger-compact-extension.test.ts
+@@ -19,6 +19,7 @@ function createContext(tokens: number | null, compact = vi.fn()): ExtensionConte
+ 		hasPendingMessages: () => false,
+ 		shutdown: vi.fn(),
+ 		getContextUsage: () => ({ tokens, contextWindow: 200_000, percent: tokens === null ? null : tokens / 2000 }),
++		requestCompactionBeforeNextTurn: () => false,
+ 		compact,
+ 		getSystemPrompt: () => "",
+ 	};
