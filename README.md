@@ -59,11 +59,11 @@ pi -e .
 
 ## astra prerelease
 
-The unreleased local `0.1.9-astra.1` Astra successor is not compatible with ordinary Pi installs. It requires the exact patched Pi `0.85.1` contract; semver matching alone is insufficient. Its unreleased source reference is `pi install git:github.com/almogdepaz/pi-async-compaction@main`; do not execute it until the release owner has packaged and activated the successor. Follow [the exact-base patch, build, and isolated activation procedure](docs/astra-remote-context.md#exact-host-build-and-isolated-activation) for the released base.
+The `0.1.9-astra.1` Astra prerelease is not compatible with ordinary Pi installs. It requires the exact patched Pi `0.85.1` contract; semver matching alone is insufficient. Follow [the exact-base patch, build, and isolated activation procedure](docs/astra-remote-context.md#exact-host-build-and-isolated-activation).
 
 ```bash
 cd /path/to/pi-astra-host
-PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.0" node packages/coding-agent/dist/cli.js install git:github.com/almogdepaz/pi-async-compaction@v0.1.9-astra.0
+PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.1" node packages/coding-agent/dist/cli.js install git:github.com/almogdepaz/pi-async-compaction@v0.1.9-astra.1
 ```
 
 Do not run the normal installation commands above for this prerelease; they continue to install published `0.1.8` into ordinary Pi.
@@ -212,7 +212,7 @@ bun run check
 bun pm pack --dry-run
 ```
 
-Published `0.1.8` was tested against Pi `0.84.3` and `0.84.4`, with peer range `>=0.84.3 <0.85.0`. The unreleased local `0.1.9-astra.1` successor instead requires the exact patched Pi `0.85.1` build; semver compatibility alone is insufficient. Do not co-load the published and local-successor compactor copies in one Pi runtime.
+Published `0.1.8` was tested against Pi `0.84.3` and `0.84.4`, with peer range `>=0.84.3 <0.85.0`. The `0.1.9-astra.1` prerelease instead requires the exact patched Pi `0.85.1` build; semver compatibility alone is insufficient. Do not co-load the published and prerelease compactor copies in one Pi runtime.
 
 ## changelog
 

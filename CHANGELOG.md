@@ -1,6 +1,6 @@
 # changelog
 
-## 0.1.9-astra.1 — unreleased
+## 0.1.9-astra.1 — 2026-09-15
 
 ### Added
 
