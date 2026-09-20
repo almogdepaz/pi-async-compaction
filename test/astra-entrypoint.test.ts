@@ -1,5 +1,8 @@
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { isAstraRemoteModel } from "../src/astra/activation";
+import { isAstraRemoteModel, REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE } from "../src/astra/activation";
 import astraRemoteContext from "../src/astra/index";
 
 const model = {
@@ -13,6 +16,75 @@ test("matches only the bundled Astra subscription model identity", () => {
 	expect(isAstraRemoteModel(model)).toBe(true);
 	expect(isAstraRemoteModel({ ...model, id: "gpt-5.6-terra" })).toBe(false);
 	expect(isAstraRemoteModel({ ...model, provider: "openai" })).toBe(false);
+});
+
+test("requests remote-window compaction at the shared configured start ratio", async () => {
+	const cwd = await mkdtemp(join(tmpdir(), "pi-astra-trigger-"));
+	const previousRatio = process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO;
+	const previousEnabled = process.env.PI_ASYNC_PREFIX_COMPACTION;
+	try {
+		await mkdir(join(cwd, ".pi"));
+		await writeFile(join(cwd, ".pi", "settings.json"), JSON.stringify({
+			compaction: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 1 },
+		}));
+		process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO = "0.5";
+		delete process.env.PI_ASYNC_PREFIX_COMPACTION;
+
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+		astraRemoteContext({
+			registerContextHandler: () => undefined,
+			registerTool: () => undefined,
+			getAllTools: () => [],
+			getToolDefinition: () => undefined,
+			getActiveTools: () => [],
+			setActiveTools: () => undefined,
+			on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(event, handler),
+		} as never);
+		const turnEnd = handlers.get("turn_end");
+		if (!turnEnd) throw new Error("expected turn_end handler");
+		let requests = 0;
+		const context = (tokens: number | null, isRemote = true) => ({
+			cwd,
+			isProjectTrusted: () => true,
+			getContextUsage: () => ({ tokens, contextWindow: 40_000 }),
+			requestCompactionBeforeNextTurn: () => {
+				requests++;
+				return true;
+			},
+			sessionManager: {
+				getEntries: () => isRemote ? [{ type: "custom", customType: REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE }] : [],
+			},
+		});
+
+		turnEnd({}, context(20_001));
+		expect(requests).toBe(1);
+		turnEnd({}, context(20_000));
+		turnEnd({}, context(null));
+		turnEnd({}, context(19_999));
+		expect(requests).toBe(1);
+		expect(() => turnEnd({}, {
+			...context(20_001),
+			getContextUsage: () => {
+				throw new Error("unexpected usage failure");
+			},
+		})).toThrow("unexpected usage failure");
+		process.env.PI_ASYNC_PREFIX_COMPACTION = "0";
+		turnEnd({}, context(20_001));
+		expect(requests).toBe(1);
+		delete process.env.PI_ASYNC_PREFIX_COMPACTION;
+		await writeFile(join(cwd, ".pi", "settings.json"), JSON.stringify({
+			compaction: { enabled: false, reserveTokens: 1_000, keepRecentTokens: 1 },
+		}));
+		turnEnd({}, context(20_001));
+		turnEnd({}, context(20_001, false));
+		expect(requests).toBe(1);
+	} finally {
+		if (previousRatio === undefined) delete process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO;
+		else process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO = previousRatio;
+		if (previousEnabled === undefined) delete process.env.PI_ASYNC_PREFIX_COMPACTION;
+		else process.env.PI_ASYNC_PREFIX_COMPACTION = previousEnabled;
+		await rm(cwd, { recursive: true, force: true });
+	}
 });
 
 test("activates the model-selected entrypoint with a bound account and provider bridge", async () => {

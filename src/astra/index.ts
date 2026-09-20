@@ -30,6 +30,7 @@ import {
 	type AstraWindowLookup,
 } from "./provider";
 import { registerAstraHistoryNotesTools } from "./tools";
+import { getCompactionSettings, getStartRatio, getStartWindow, isEnabled } from "../utils";
 
 const REQUIRED_HANDLER_ID = "astra-remote";
 const REQUIRED_HANDLER_VERSION = 1;
@@ -90,6 +91,27 @@ function parseWindowDetails(details: unknown): AstraWindowIdentity {
 		windowNumber: window["windowNumber"] as number,
 		accountId: window["accountId"],
 	};
+}
+
+function shouldRequestRemoteWindowCompaction(ctx: ExtensionContext): boolean {
+	if (!isEnabled()) return false;
+	const settings = getCompactionSettings(ctx);
+	if (!settings.enabled) return false;
+	const usage = ctx.getContextUsage();
+	if (!usage || usage.tokens === null) return false;
+	const startWindow = getStartWindow(usage.contextWindow, getStartRatio(), settings.reserveTokens);
+	return startWindow.kind === "available" && usage.tokens > startWindow.startThreshold;
+}
+
+function requestCompactionBeforeNextTurn(ctx: ExtensionContext): boolean {
+	const request = (ctx as ExtensionContext & { readonly requestCompactionBeforeNextTurn?: () => boolean }).requestCompactionBeforeNextTurn;
+	return request?.() ?? false;
+}
+
+function compactRemoteWindowBeforePrompt(ctx: ExtensionContext): Promise<void> {
+	return new Promise((resolve, reject) => {
+		ctx.compact({ onComplete: () => resolve(), onError: reject });
+	});
 }
 
 function isWindowMarker(entry: SessionEntry): boolean {
@@ -372,6 +394,7 @@ export default function astraRemoteContext(pi: ExtensionAPI): void {
 	let activationError: Error | undefined;
 	let astraProvider: Provider<"openai-codex-responses"> | undefined;
 	let pendingWindowTransition: AstraWindowIdentity | undefined;
+	let pendingAutomaticWindowId: string | undefined;
 	const astraRecoveryTools: Array<Pick<ToolDefinition, "name">> = [];
 
 	const currentWindow = (): AstraWindowIdentity | undefined => latestWindow(activeBranch());
@@ -469,6 +492,7 @@ export default function astraRemoteContext(pi: ExtensionAPI): void {
 	astraRecoveryTools.push(history, notes, newContext, remaining);
 
 	pi.on("session_start", async (_event, ctx) => {
+		pendingAutomaticWindowId = undefined;
 		activeModel = ctx.model;
 		activeBranch = () => ctx.sessionManager.getBranch();
 		activeEntries = () => ctx.sessionManager.getEntries();
@@ -511,15 +535,35 @@ export default function astraRemoteContext(pi: ExtensionAPI): void {
 		if (isAstraRemoteModel(event.model)) await activate(ctx, expected);
 	});
 
-	pi.on("turn_end", () => {
+	pi.on("before_agent_start", async (_event, ctx) => {
+		const window = currentWindow();
+		if (!pendingAutomaticWindowId || pendingAutomaticWindowId !== window?.currentWindowId) {
+			pendingAutomaticWindowId = undefined;
+			return;
+		}
+		if (isAstraRemoteContextRequired(ctx.sessionManager.getEntries()) && shouldRequestRemoteWindowCompaction(ctx)) {
+			await compactRemoteWindowBeforePrompt(ctx);
+		}
+	});
+	pi.on("turn_end", (_event, ctx) => {
 		if (pendingWindowTransition && currentWindow()?.currentWindowId !== pendingWindowTransition.currentWindowId) {
 			pendingWindowTransition = undefined;
 		}
+		const window = currentWindow();
+		if (!pendingWindowTransition && isAstraRemoteContextRequired(ctx.sessionManager.getEntries()) && shouldRequestRemoteWindowCompaction(ctx)) {
+			pendingAutomaticWindowId = window?.currentWindowId;
+			requestCompactionBeforeNextTurn(ctx);
+		}
 	});
 	pi.on("agent_settled", () => {
-		if (pendingWindowTransition && currentWindow()?.currentWindowId === pendingWindowTransition.currentWindowId) {
+		const window = currentWindow();
+		if (pendingWindowTransition && window?.currentWindowId === pendingWindowTransition.currentWindowId) {
 			pendingWindowTransition = undefined;
 		}
+		if (pendingAutomaticWindowId !== window?.currentWindowId) pendingAutomaticWindowId = undefined;
+	});
+	pi.on("session_compact", () => {
+		pendingAutomaticWindowId = undefined;
 	});
 	pi.on("context", (event) => {
 		const lookup = remoteLookup(activeSessionId());
