@@ -1,5 +1,11 @@
 # changelog
 
+## 0.1.9-astra.2 — 2026-09-20
+
+- fixed Astra remote-window rollover to honor `PI_ASYNC_PREFIX_COMPACTION_START_RATIO`, using the shared 80% default when unset instead of always waiting for Pi's reserve-token threshold.
+- preserved safe deferred rollover for queued/tool continuations and added an awaited rollover before the next actual prompt after a final reply, without generating a summary or synthesizing a continuation.
+- surfaced unexpected trigger eligibility errors and added real-host regressions for configured boundaries, final replies and manual `new_context` non-duplication. The exact patched Pi `0.85.1` host contract is unchanged.
+
 ## 0.1.9-astra.1 — 2026-09-15
 
 ### Added

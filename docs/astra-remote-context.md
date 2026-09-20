@@ -2,7 +2,7 @@
 
 ## prerelease compatibility
 
-This document describes the `0.1.9-astra.1` prerelease, not published `0.1.8`. It requires the exact patched Pi `0.85.1` source contract based at `9767ba275f3e9a5ee0f5c5342249b629ab1b2282`; matching `0.85.1` semver alone is insufficient. Do not use it with unpatched, older, or future Pi hosts.
+This document describes the `0.1.9-astra.2` prerelease, not published `0.1.8`. It requires the exact patched Pi `0.85.1` source contract based at `9767ba275f3e9a5ee0f5c5342249b629ab1b2282`; matching `0.85.1` semver alone is insufficient. Do not use it with unpatched, older, or future Pi hosts.
 
 The package loads both its normal async compactor and the Astra entrypoint. Astra remote context activates **only** when the selected model is exactly `openai-codex/gpt-6-astra` from Pi's built-in Codex subscription provider. There is no Astra environment flag and `PI_ASYNC_PREFIX_COMPACTION=0` must not be set: ordinary models keep the default async compactor.
 
@@ -13,7 +13,7 @@ Do not apply the patch to another Pi revision. These commands clone the tagged e
 ```bash
 git clone https://github.com/almogdepaz/pi-async-compaction.git
 cd pi-async-compaction
-git checkout --detach v0.1.9-astra.1
+git checkout --detach v0.1.9-astra.2
 extension_repo="$PWD"
 
 cd ..
@@ -26,8 +26,8 @@ git diff --check
 npm ci --ignore-scripts
 npm run build
 
-export PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.1"
-node packages/coding-agent/dist/cli.js install git:github.com/almogdepaz/pi-async-compaction@v0.1.9-astra.1
+export PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.2"
+node packages/coding-agent/dist/cli.js install git:github.com/almogdepaz/pi-async-compaction@v0.1.9-astra.2
 node packages/coding-agent/dist/cli.js
 ```
 
