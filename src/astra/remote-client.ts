@@ -44,6 +44,21 @@ export interface AstraBackendResult {
 	readonly images: readonly AstraImage[];
 }
 
+/** Structured terminal cause for the only backend failures eligible for summary fallback. */
+export class AstraBackendServiceUnavailableError extends Error {
+	readonly status: number;
+
+	constructor(status: number) {
+		super(`History and notes backend failed with service-unavailable status ${status}`);
+		this.name = "AstraBackendServiceUnavailableError";
+		this.status = status;
+	}
+}
+
+export function isAstraServiceUnavailableStatus(status: number): boolean {
+	return status === 429 || (status >= 500 && status <= 599);
+}
+
 function endpointUrl(endpoint: string): URL {
 	const url = new URL(endpoint, `${CODEX_ORIGIN}${CODEX_BASE_PATH}`);
 	if (url.origin !== CODEX_ORIGIN || !url.pathname.startsWith(CODEX_BASE_PATH)) {
@@ -186,7 +201,10 @@ export async function callAstraBackend(
 			},
 		}),
 	});
-	if (!response.ok) throw new Error(`History and notes backend failed (${response.status})`);
+	if (!response.ok) {
+		if (isAstraServiceUnavailableStatus(response.status)) throw new AstraBackendServiceUnavailableError(response.status);
+		throw new Error(`History and notes backend failed (${response.status})`);
+	}
 	const body = await readResponseBody(response);
 	let parsed: unknown;
 	try {

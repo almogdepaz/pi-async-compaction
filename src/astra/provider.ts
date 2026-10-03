@@ -10,19 +10,27 @@ import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
 	type AssistantMessageEventStream,
-	type Context,
+	type TranscriptContext,
 	type Model,
 	type Provider,
 	type SimpleStreamOptions,
 	type StreamOptions,
 	type ToolCall,
 } from "@earendil-works/pi-ai";
+import type { FetchFunction } from "@earendil-works/pi-ai";
+import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
 import { ASTRA_MODEL_ID } from "./activation";
 import type { AstraCodexAuth } from "./auth";
 import { createReservedContextNamespaces, isHistoryAction, isNotesAction } from "./contract";
+import { getAstraRecoveryToolDeclarations } from "./tools";
 
 const APPROVED_CODEX_ORIGIN = "https://chatgpt.com";
 const ASTRA_WINDOW_MESSAGE_TYPE = "astra-remote-context-window";
+
+/** Only explicit service saturation/outage statuses can degrade remote mode. */
+export function isEligibleAstraServiceUnavailableStatus(status: number): boolean {
+	return status === 429 || (status >= 500 && status <= 599);
+}
 
 export interface AstraWindowIdentity {
 	readonly sessionId: string;
@@ -101,16 +109,6 @@ function withWindowMetadata(payload: unknown, metadata: AstraRequestMetadata): u
 	};
 }
 
-function assertWindowAccount(headers: SimpleStreamOptions["headers"], window: AstraWindowIdentity): void {
-	const accountId = Object.entries(headers ?? {}).find(([name]) => name.toLowerCase() === "chatgpt-account-id")?.[1];
-	if (typeof accountId !== "string" || accountId === "") {
-		throw new Error("Astra remote context requires validated Codex account metadata");
-	}
-	if (accountId !== window.accountId) {
-		throw new Error("Astra remote context cannot continue with a different Codex account");
-	}
-}
-
 function sameWindow(left: AstraWindowIdentity, right: AstraWindowIdentity): boolean {
 	return left.sessionId === right.sessionId &&
 		left.firstWindowId === right.firstWindowId &&
@@ -133,22 +131,27 @@ function assertCurrentRequest(
 	}
 }
 
-function assertRecoveryTools(context: Context): void {
-	const activeTools = new Set(context.tools?.map((tool) => tool.name));
-	if (!activeTools.has("history") || !activeTools.has("notes")) {
-		throw new Error("Astra remote context requires active history and notes tools");
+function assertRecoveryTools(context: TranscriptContext): void {
+	// Stock transcript semantics apply removals before additions so a same-message replacement wins.
+	const activeTools = new Map(getCurrentTools(context.messages).map((tool) => [tool.name, tool]));
+	for (const expected of getAstraRecoveryToolDeclarations()) {
+		const actual = activeTools.get(expected.name);
+		if (!actual || actual.description !== expected.description || !isDeepStrictEqual(actual.parameters, expected.parameters)) {
+			throw new Error("Astra remote context requires its active history and notes tool definitions");
+		}
 	}
 }
 
 export function assertFinalRecoveryNamespaces(payload: unknown): void {
-	if (!isRecord(payload) || !Array.isArray(payload["tools"])) {
-		throw new Error("Astra remote context requires exactly one history and notes namespace");
-	}
-	const names = payload["tools"].flatMap((tool) =>
+	if (!isRecord(payload)) throw new Error("Astra remote context requires exactly one history and notes namespace");
+	const toolSets = [payload["tools"], ...(Array.isArray(payload["input"])
+		? payload["input"].map((item) => isRecord(item) ? item["tools"] : undefined)
+		: [])];
+	const names = toolSets.flatMap((tools) => Array.isArray(tools) ? tools.flatMap((tool) =>
 		isRecord(tool) && tool["type"] === "namespace" && (tool["name"] === "history" || tool["name"] === "notes")
 			? [tool["name"]]
 			: [],
-	);
+	) : []);
 	if (names.filter((name) => name === "history").length !== 1 || names.filter((name) => name === "notes").length !== 1) {
 		throw new Error("Astra remote context requires exactly one history and notes namespace");
 	}
@@ -163,20 +166,21 @@ function encryptedOutput(details: unknown): string | undefined {
 	return output;
 }
 
-export function replayEncryptedToolOutputs(payload: unknown, context: Context): unknown {
+export function replayEncryptedToolOutputs(payload: unknown, context: TranscriptContext): unknown {
 	if (!isRecord(payload) || !Array.isArray(payload["input"])) return payload;
 	const encryptedByCallId = new Map<string, { encrypted: string; images: unknown[] }>();
 	for (const message of context.messages) {
 		if (message.role !== "toolResult") continue;
 		const encrypted = encryptedOutput(message.details);
 		if (!encrypted) continue;
-		const images = message.content
-			.filter((block) => block.type === "image")
-			.map((block) => ({
+		const images = message.content.flatMap((block) => {
+			if (block.type !== "image" || typeof block.data !== "string" || typeof block.mimeType !== "string") return [];
+			return [{
 				type: "input_image",
 				detail: "auto",
 				image_url: `data:${block.mimeType};base64,${block.data}`,
-			}));
+			}];
+		});
 		encryptedByCallId.set(message.toolCallId.split("|")[0] ?? message.toolCallId, { encrypted, images });
 	}
 	if (encryptedByCallId.size === 0) return payload;
@@ -205,7 +209,7 @@ export function routeAstraNamespaceToolCall(call: ToolCall): ToolCall {
 export function unrouteAstraNamespaceToolCall(call: ToolCall): ToolCall {
 	if ((call.namespace !== "history" && call.namespace !== "notes") || call.name !== call.namespace) return call;
 	const action = call.arguments["action"];
-	const valid = call.namespace === "history" ? isHistoryAction(action) : isNotesAction(action);
+	const valid = typeof action === "string" && (call.namespace === "history" ? isHistoryAction(action) : isNotesAction(action));
 	if (!valid || Object.hasOwn(call.arguments, "context")) {
 		throw new Error(`Astra rejected malformed ${call.namespace} replay operation`);
 	}
@@ -220,7 +224,7 @@ function routeMessage(message: AssistantMessage): AssistantMessage {
 	};
 }
 
-function unrouteContext(context: Context): Context {
+function unrouteContext(context: TranscriptContext): TranscriptContext {
 	return {
 		...context,
 		messages: context.messages.map((message) => message.role === "assistant"
@@ -238,7 +242,11 @@ function routeEvent(event: AssistantMessageEvent): AssistantMessageEvent {
 		: { ...event, partial };
 }
 
-function routeNamespaceToolStream(source: AssistantMessageEventStream): AssistantMessageEventStream {
+function routeNamespaceToolStream(
+	source: AssistantMessageEventStream,
+	onServiceUnavailable?: (status: number) => void,
+	getServiceUnavailableStatus?: () => number | undefined,
+): AssistantMessageEventStream {
 	const output = createAssistantMessageEventStream();
 	void (async () => {
 		let latest: AssistantMessage | undefined;
@@ -246,6 +254,10 @@ function routeNamespaceToolStream(source: AssistantMessageEventStream): Assistan
 			for await (const event of source) {
 				const routed = routeEvent(event);
 				latest = routed.type === "done" ? routed.message : routed.type === "error" ? routed.error : routed.partial;
+				if (routed.type === "error" && routed.reason === "error") {
+					const status = getServiceUnavailableStatus?.();
+					if (status !== undefined) onServiceUnavailable?.(status);
+				}
 				output.push(routed);
 				if (routed.type === "done") output.end(routed.message);
 				if (routed.type === "error") output.end(routed.error);
@@ -257,6 +269,8 @@ function routeNamespaceToolStream(source: AssistantMessageEventStream): Assistan
 				stopReason: "error",
 				errorMessage: error instanceof Error ? error.message : String(error),
 			};
+			const status = getServiceUnavailableStatus?.();
+			if (status !== undefined) onServiceUnavailable?.(status);
 			output.push({ type: "error", reason: "error", error: failed });
 			output.end(failed);
 		}
@@ -265,13 +279,15 @@ function routeNamespaceToolStream(source: AssistantMessageEventStream): Assistan
 }
 
 interface ProtectedAstraOptions extends StreamOptions {
-	readonly beforeTransportAttempt: (headers: Headers) => Promise<void>;
+	readonly getServiceUnavailableStatus: () => number | undefined;
 }
 
 export function createAstraCodexProvider(
 	native: Provider<"openai-codex-responses">,
 	getWindow: (sessionId: string | undefined) => AstraWindowLookup,
 	resolveCurrentAuth: () => Promise<AstraCodexAuth>,
+	onServiceUnavailable?: (status: number) => void,
+	validateTranscript?: (context: TranscriptContext, window: AstraWindowIdentity) => void,
 ): Provider<"openai-codex-responses"> {
 	const validateAttempt = async (
 		headers: Headers,
@@ -290,13 +306,13 @@ export function createAstraCodexProvider(
 	};
 	const protectOptions = (
 		model: Model<"openai-codex-responses">,
-		context: Context,
+		context: TranscriptContext,
 		options: StreamOptions,
 		lookup: Extract<AstraWindowLookup, { readonly kind: "required" }>,
 	): ProtectedAstraOptions => {
 		const window = lookup.window;
 		assertCurrentRequest(model, options.sessionId, lookup, getWindow);
-		assertWindowAccount(options.headers, window);
+		validateTranscript?.(context, window);
 		assertRecoveryTools(context);
 		const metadata: AstraRequestMetadata = {
 			session_id: window.sessionId,
@@ -308,9 +324,25 @@ export function createAstraCodexProvider(
 			request_kind: "turn",
 			history_ingest_requested: true,
 		};
+		let terminalServiceUnavailableStatus: number | undefined;
+		const guardedFetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			// A later auth/guard/abort/non-eligible response invalidates an older retry's 429/5xx.
+			terminalServiceUnavailableStatus = undefined;
+			const headers = new Headers(init?.headers);
+			await validateAttempt(headers, model, options.sessionId, lookup);
+			// Authentication can yield after the native adapter's cancellation check.
+			options.signal?.throwIfAborted();
+			init?.signal?.throwIfAborted();
+			const response = await (options.fetch ?? globalThis.fetch)(input, { ...init, headers, redirect: "error" });
+			terminalServiceUnavailableStatus = isEligibleAstraServiceUnavailableStatus(response.status) ? response.status : undefined;
+			return response;
+		};
 		return {
-			// Preserve each native profile's optional fields; change only the shared hooks and headers.
+			// Preserve each native profile's optional fields; remote Astra alone changes transport/fetch.
 			...options,
+			transport: "sse",
+			// Stock SSE only calls fetch; its alias also picks up Bun's unused static preconnect.
+			fetch: guardedFetch as FetchFunction,
 			headers: {
 				...options.headers,
 				"x-codex-window-id": metadata.window_id,
@@ -331,28 +363,39 @@ export function createAstraCodexProvider(
 				assertFinalRecoveryNamespaces(finalPayload);
 				return finalPayload;
 			},
-			beforeTransportAttempt: (headers) => validateAttempt(headers, model, options.sessionId, lookup),
+			// The native SSE adapter invokes `fetch` inside its retry loop, so the guard above runs per attempt.
+			getServiceUnavailableStatus: () => options.signal?.aborted ? undefined : terminalServiceUnavailableStatus,
 		};
 	};
 	const streamSimple = (
 		model: Model<"openai-codex-responses">,
-		context: Context,
+		context: TranscriptContext,
 		options?: SimpleStreamOptions,
 	): AssistantMessageEventStream => {
 		const lookup = getWindow(options?.sessionId);
 		if (lookup.kind === "ordinary") return native.streamSimple(model, context, options);
 		if (lookup.kind === "invalid") throw new Error(lookup.reason);
-		return routeNamespaceToolStream(native.streamSimple(model, unrouteContext(context), protectOptions(model, context, options ?? {}, lookup)));
+		const protectedOptions = protectOptions(model, context, options ?? {}, lookup);
+		return routeNamespaceToolStream(
+			native.streamSimple(model, unrouteContext(context), protectedOptions),
+			onServiceUnavailable,
+			protectedOptions.getServiceUnavailableStatus,
+		);
 	};
 	const stream = (
 		model: Model<"openai-codex-responses">,
-		context: Context,
+		context: TranscriptContext,
 		options?: ApiStreamOptions<"openai-codex-responses">,
 	): AssistantMessageEventStream => {
 		const lookup = getWindow(options?.sessionId);
 		if (lookup.kind === "ordinary") return native.stream(model, context, options);
 		if (lookup.kind === "invalid") throw new Error(lookup.reason);
-		return routeNamespaceToolStream(native.stream(model, unrouteContext(context), protectOptions(model, context, options ?? {}, lookup)));
+		const protectedOptions = protectOptions(model, context, options ?? {}, lookup);
+		return routeNamespaceToolStream(
+			native.stream(model, unrouteContext(context), protectedOptions),
+			onServiceUnavailable,
+		protectedOptions.getServiceUnavailableStatus,
+		);
 	};
 	return { ...native, stream, streamSimple };
 }

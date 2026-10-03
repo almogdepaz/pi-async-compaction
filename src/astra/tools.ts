@@ -11,6 +11,7 @@ import {
 import {
 	ASTRA_HISTORY_ENDPOINTS,
 	ASTRA_NOTES_ENDPOINTS,
+	AstraBackendServiceUnavailableError,
 	callAstraBackend,
 } from "./remote-client";
 import type { AstraWindowIdentity } from "./provider";
@@ -65,6 +66,18 @@ export interface AstraHistoryNotesDetails {
 	readonly astraHistoryNotes: Record<string, unknown>;
 }
 
+const HISTORY_DECLARATION = {
+	name: "history",
+	description: "Prior-window detail. Pass IDs unchanged. Search, never browse.",
+	parameters: HISTORY_PARAMETERS,
+} as const satisfies Pick<ToolDefinition, "name" | "description" | "parameters">;
+
+const NOTES_DECLARATION = {
+	name: "notes",
+	description: "Cross-window checkpoints on virtual paths.",
+	parameters: NOTES_PARAMETERS,
+} as const satisfies Pick<ToolDefinition, "name" | "description" | "parameters">;
+
 function contentFor(result: Record<string, unknown>): string {
 	return typeof result["encrypted_output"] === "string"
 		? "context operation completed"
@@ -81,13 +94,20 @@ async function executeHistory(
 	ctx: ExtensionContext,
 	signal: AbortSignal | undefined,
 	getExpectedWindow: () => AstraWindowIdentity | undefined,
+	onServiceUnavailable: (status: number) => void,
 ): Promise<AgentToolResult<AstraHistoryNotesDetails>> {
 	if (!isHistoryAction(params["action"])) throw new Error("history requires a supported action");
 	validateHistoryAction(params["action"], params);
-	const result = await callAstraBackend(ctx, ASTRA_HISTORY_ENDPOINTS[params["action"]], withoutAction(params), signal, {
-		mode: "tokens",
-		limit: 10_000,
-	}, getExpectedWindow);
+	let result;
+	try {
+		result = await callAstraBackend(ctx, ASTRA_HISTORY_ENDPOINTS[params["action"]], withoutAction(params), signal, {
+			mode: "tokens",
+			limit: 10_000,
+		}, getExpectedWindow);
+	} catch (error) {
+		if (error instanceof AstraBackendServiceUnavailableError) onServiceUnavailable(error.status);
+		throw error;
+	}
 	return {
 		content: [{ type: "text", text: contentFor(result.output) }, ...result.images],
 		details: { astraHistoryNotes: result.output },
@@ -99,40 +119,48 @@ async function executeNotes(
 	ctx: ExtensionContext,
 	signal: AbortSignal | undefined,
 	getExpectedWindow: () => AstraWindowIdentity | undefined,
+	onServiceUnavailable: (status: number) => void,
 ): Promise<AgentToolResult<AstraHistoryNotesDetails>> {
 	if (!isNotesAction(params["action"])) throw new Error("notes requires a supported action");
 	validateNotesAction(params["action"], params);
-	const result = await callAstraBackend(ctx, ASTRA_NOTES_ENDPOINTS[params["action"]], withoutAction(params), signal, {
-		mode: "tokens",
-		limit: 10_000,
-	}, getExpectedWindow);
+	let result;
+	try {
+		result = await callAstraBackend(ctx, ASTRA_NOTES_ENDPOINTS[params["action"]], withoutAction(params), signal, {
+			mode: "tokens",
+			limit: 10_000,
+		}, getExpectedWindow);
+	} catch (error) {
+		if (error instanceof AstraBackendServiceUnavailableError) onServiceUnavailable(error.status);
+		throw error;
+	}
 	return {
 		content: [{ type: "text", text: contentFor(result.output) }, ...result.images],
 		details: { astraHistoryNotes: result.output },
 	};
 }
 
+export function getAstraRecoveryToolDeclarations(): readonly Pick<ToolDefinition, "name" | "description" | "parameters">[] {
+	return [HISTORY_DECLARATION, NOTES_DECLARATION];
+}
+
 export function registerAstraHistoryNotesTools(
 	pi: ExtensionAPI,
 	getExpectedWindow: () => AstraWindowIdentity | undefined,
-): { readonly history: Pick<ToolDefinition, "name">; readonly notes: Pick<ToolDefinition, "name"> } {
+	onServiceUnavailable: (status: number) => void = () => undefined,
+): { readonly history: Pick<ToolDefinition, "name" | "description" | "parameters">; readonly notes: Pick<ToolDefinition, "name" | "description" | "parameters"> } {
 	const history: ToolDefinition<typeof HISTORY_PARAMETERS, AstraHistoryNotesDetails> = {
-		name: "history",
+		...HISTORY_DECLARATION,
 		label: "history",
-		description: "Prior-window detail. Pass IDs unchanged. Search, never browse.",
-		parameters: HISTORY_PARAMETERS,
 		async execute(_id, params, signal, _update, ctx) {
-			return executeHistory(params, ctx, signal, getExpectedWindow);
+			return executeHistory(params, ctx, signal, getExpectedWindow, onServiceUnavailable);
 		},
 	};
 	const notes: ToolDefinition<typeof NOTES_PARAMETERS, AstraHistoryNotesDetails> = {
-		name: "notes",
+		...NOTES_DECLARATION,
 		label: "notes",
-		description: "Cross-window checkpoints on virtual paths.",
-		parameters: NOTES_PARAMETERS,
 		executionMode: "sequential",
 		async execute(_id, params, signal, _update, ctx) {
-			return executeNotes(params, ctx, signal, getExpectedWindow);
+			return executeNotes(params, ctx, signal, getExpectedWindow, onServiceUnavailable);
 		}
 	};
 	pi.registerTool(history);

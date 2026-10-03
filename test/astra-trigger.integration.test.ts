@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "bun:test";
+import type { Provider } from "@earendil-works/pi-ai";
 
 const ASTRA_HOST_DIR = process.env.PI_ASTRA_HOST_NODE_MODULES;
 const ASTRA_EXTENSION_PATH = process.env.PI_ASTRA_EXTENSION_PATH ?? fileURLToPath(new URL("../src/astra/index.ts", import.meta.url));
@@ -20,7 +21,10 @@ if (!existsSync(ASTRA_EXTENSION_PATH)) {
 }
 
 interface AstraHost {
-	readonly createAgentSession: (options: Record<string, unknown>) => Promise<{ readonly session: AstraSession }>;
+	readonly createAgentSession: (options: Record<string, unknown>) => Promise<{
+		readonly session: AstraSession;
+		readonly extensionsResult: { readonly errors: readonly { readonly error: string }[] };
+	}>;
 	readonly DefaultResourceLoader: new (options: Record<string, unknown>) => { reload: () => Promise<void> };
 	readonly ModelRuntime: {
 		create: (options: Record<string, unknown>) => Promise<{ registerNativeProvider: (provider: unknown) => () => void }>;
@@ -36,7 +40,7 @@ interface AstraSessionManager {
 interface AstraSession {
 	readonly model: Record<string, unknown> | undefined;
 	readonly messages: readonly { readonly role: string; readonly content: unknown }[];
-	readonly bindExtensions: (bindings: Record<string, unknown>) => Promise<void>;
+	readonly bindExtensions: (bindings: { readonly onError: (error: unknown) => void }) => Promise<void>;
 	readonly prompt: (text: string) => Promise<void>;
 	readonly steer: (text: string) => Promise<void>;
 	readonly dispose: () => void;
@@ -44,7 +48,9 @@ interface AstraSession {
 }
 
 interface AstraAi {
-	readonly InMemoryCredentialStore: new () => unknown;
+	readonly InMemoryCredentialStore: new () => {
+		modify: (providerId: string, update: () => Promise<unknown>) => Promise<unknown>;
+	};
 	readonly createFauxCore: (options: Record<string, unknown>) => AstraProviderCore;
 	readonly createProvider: (options: Record<string, unknown>) => unknown;
 	readonly fauxAssistantMessage: (content: unknown) => unknown;
@@ -124,14 +130,11 @@ async function createHarness(responses: Array<(ai: AstraAi, context: { readonly 
 			api: "openai-codex-responses",
 			baseUrl: "https://chatgpt.com/backend-api",
 		});
+		const { openaiCodexProvider } = await import(`${ASTRA_HOST_DIR}/@earendil-works/pi-ai/dist/providers/openai-codex.js`) as { readonly openaiCodexProvider: () => Provider<"openai-codex-responses"> };
 		const nativeProvider = ai.createProvider({
 			id: "openai-codex",
-			auth: {
-				apiKey: {
-					name: "test Codex subscription",
-					resolve: async () => ({ auth: { apiKey: "test-token", headers: { "chatgpt-account-id": "test-account" } } }),
-				},
-			},
+			// Reuse stock OAuth while isolating generation at the host's faux provider boundary.
+			auth: openaiCodexProvider().auth,
 			models: providerCore.models,
 			api: {
 				stream: providerCore.stream,
@@ -141,8 +144,11 @@ async function createHarness(responses: Array<(ai: AstraAi, context: { readonly 
 			},
 		});
 		providerCore.setResponses(responses.map((response) => (context) => response(ai, context)));
+		const credentials = new ai.InMemoryCredentialStore();
+		const claims = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "test-account" }, exp: Math.floor(Date.now() / 1_000) + 3_600 })).toString("base64url");
+		await credentials.modify("openai-codex", async () => ({ type: "oauth", access: `e30.${claims}.e30`, refresh: "not-used", expires: Date.now() + 3_600_000 }));
 		const modelRuntime = await host.ModelRuntime.create({
-			credentials: new ai.InMemoryCredentialStore(),
+			credentials,
 			modelsPath: null,
 			refreshOnCreate: false,
 		});
@@ -155,7 +161,6 @@ async function createHarness(responses: Array<(ai: AstraAi, context: { readonly 
 			cwd,
 			agentDir: join(cwd, ".agent"),
 			settingsManager,
-			noExtensions: true,
 			noSkills: true,
 			noPromptTemplates: true,
 			noThemes: true,
@@ -177,7 +182,9 @@ async function createHarness(responses: Array<(ai: AstraAi, context: { readonly 
 			sessionStartEvent: { type: "session_start", reason: "new" },
 		});
 		session = created.session;
-		await session.bindExtensions({});
+		expect(created.extensionsResult.errors).toEqual([]);
+		await session.bindExtensions({ onError: (error) => { throw error; } });
+		expect(sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "astra-remote-context-window")).toHaveLength(1);
 		expect(session.model).toMatchObject({
 			provider: "openai-codex",
 			id: "gpt-6-astra",
@@ -210,9 +217,11 @@ async function createHarness(responses: Array<(ai: AstraAi, context: { readonly 
 test.skipIf(!ASTRA_HOST_DIR)("rotates once before a queued tool continuation within the shared start window", async () => {
 	const previousRatio = process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO;
 	const previousEnabled = process.env.PI_ASYNC_PREFIX_COMPACTION;
+	const previousAstraMode = process.env.PI_ASTRA_COMPACTION_MODE;
 	try {
 		process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO = "0.5";
 		delete process.env.PI_ASYNC_PREFIX_COMPACTION;
+		process.env.PI_ASTRA_COMPACTION_MODE = "remote";
 		const firstCall = deferred<void>();
 		const releaseFirstCall = deferred<void>();
 		const secondRequestContexts: Array<readonly AstraMessage[]> = [];
@@ -237,7 +246,8 @@ test.skipIf(!ASTRA_HOST_DIR)("rotates once before a queued tool continuation wit
 			expectWithinSharedStartWindow(firstAssistantUsage(harness.sessionManager));
 			expect(harness.providerCore.state.callCount).toBe(2);
 			expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
-			expect(harness.compactionEvents).toEqual([expect.objectContaining({ reason: "deferred", aborted: false })]);
+			// Stock commits the turn boundary directly, not through the legacy compaction checkpoint.
+			expect(harness.compactionEvents).toEqual([]);
 			expect(secondRequestContexts).toHaveLength(1);
 			expect(secondRequestContexts[0]?.some((message) => contentText(message.content) === "queued continuation")).toBe(true);
 			expect(secondRequestContexts[0]?.some((message) => message.role === "compactionSummary")).toBe(false);
@@ -250,15 +260,19 @@ test.skipIf(!ASTRA_HOST_DIR)("rotates once before a queued tool continuation wit
 		else process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO = previousRatio;
 		if (previousEnabled === undefined) delete process.env.PI_ASYNC_PREFIX_COMPACTION;
 		else process.env.PI_ASYNC_PREFIX_COMPACTION = previousEnabled;
+		if (previousAstraMode === undefined) delete process.env.PI_ASTRA_COMPACTION_MODE;
+		else process.env.PI_ASTRA_COMPACTION_MODE = previousAstraMode;
 	}
 }, 20_000);
 
 test.skipIf(!ASTRA_HOST_DIR)("does not duplicate a manual new_context rotation", async () => {
 	const previousRatio = process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO;
 	const previousEnabled = process.env.PI_ASYNC_PREFIX_COMPACTION;
+	const previousAstraMode = process.env.PI_ASTRA_COMPACTION_MODE;
 	try {
 		process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO = "0.5";
 		delete process.env.PI_ASYNC_PREFIX_COMPACTION;
+		process.env.PI_ASTRA_COMPACTION_MODE = "remote";
 		const harness = await createHarness([
 			(ai) => ai.fauxAssistantMessage(ai.fauxToolCall("new_context", {})),
 			(ai) => ai.fauxAssistantMessage("manual window rotation completed"),
@@ -268,8 +282,13 @@ test.skipIf(!ASTRA_HOST_DIR)("does not duplicate a manual new_context rotation",
 
 			expectWithinSharedStartWindow(firstAssistantUsage(harness.sessionManager));
 			expect(harness.providerCore.state.callCount).toBe(2);
-			expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
-			expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "custom_message")).toHaveLength(2);
+			const compactions = harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction");
+			expect(compactions).toHaveLength(1);
+			expect(compactions[0]).toMatchObject({
+				summary: REMOTE_WINDOW_COMPACTION_SUMMARY,
+				details: { strategy: "astra-remote-window", window: { windowNumber: 1 } },
+			});
+			expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "custom_message")).toHaveLength(0);
 			expect(harness.session.messages.filter((message) => message.role === "user" && contentText(message.content) === "continue")).toHaveLength(0);
 		} finally {
 			await harness.dispose();
@@ -279,15 +298,19 @@ test.skipIf(!ASTRA_HOST_DIR)("does not duplicate a manual new_context rotation",
 		else process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO = previousRatio;
 		if (previousEnabled === undefined) delete process.env.PI_ASYNC_PREFIX_COMPACTION;
 		else process.env.PI_ASYNC_PREFIX_COMPACTION = previousEnabled;
+		if (previousAstraMode === undefined) delete process.env.PI_ASTRA_COMPACTION_MODE;
+		else process.env.PI_ASTRA_COMPACTION_MODE = previousAstraMode;
 	}
 }, 20_000);
 
 test.skipIf(!ASTRA_HOST_DIR)("rotates after a final reply before the next actual user request within the shared start window", async () => {
 	const previousRatio = process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO;
 	const previousEnabled = process.env.PI_ASYNC_PREFIX_COMPACTION;
+	const previousAstraMode = process.env.PI_ASTRA_COMPACTION_MODE;
 	try {
 		process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO = "0.5";
 		delete process.env.PI_ASYNC_PREFIX_COMPACTION;
+		process.env.PI_ASTRA_COMPACTION_MODE = "remote";
 		const firstCall = deferred<void>();
 		const releaseFirstCall = deferred<void>();
 		const secondRequestContexts: Array<readonly AstraMessage[]> = [];
@@ -317,7 +340,7 @@ test.skipIf(!ASTRA_HOST_DIR)("rotates after a final reply before the next actual
 				summary: REMOTE_WINDOW_COMPACTION_SUMMARY,
 				details: { strategy: "astra-remote-window", window: { windowNumber: 1 } },
 			});
-			expect(harness.compactionEvents).toEqual([expect.objectContaining({ reason: "manual", aborted: false })]);
+			expect(harness.compactionEvents).toEqual([]);
 			expect(secondRequestContexts).toHaveLength(1);
 			expect(secondRequestContexts[0]?.some((message) => contentText(message.content) === "next actual user request")).toBe(true);
 			expect(secondRequestContexts[0]?.some((message) => message.role === "compactionSummary")).toBe(false);
@@ -330,6 +353,8 @@ test.skipIf(!ASTRA_HOST_DIR)("rotates after a final reply before the next actual
 		else process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO = previousRatio;
 		if (previousEnabled === undefined) delete process.env.PI_ASYNC_PREFIX_COMPACTION;
 		else process.env.PI_ASYNC_PREFIX_COMPACTION = previousEnabled;
+		if (previousAstraMode === undefined) delete process.env.PI_ASTRA_COMPACTION_MODE;
+		else process.env.PI_ASTRA_COMPACTION_MODE = previousAstraMode;
 	}
 }, 20_000);
 

@@ -6,23 +6,30 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Model, Provider } from "@earendil-works/pi-ai";
+import type { Model, Provider, TranscriptContext } from "@earendil-works/pi-ai";
+import { convertToLlm, findCutPoint } from "@earendil-works/pi-coding-agent";
 import type {
 	CompactionResult,
 	ExtensionAPI,
 	ExtensionContext,
 	SessionBeforeCompactEvent,
+	SessionBoundaryDraft,
 	SessionEntry,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
+	ASTRA_MODE_ENTRY_TYPE,
+	ASTRA_MODE_PROTOCOL,
 	ASTRA_MODEL_ID,
+	getAstraMode,
 	isAstraRemoteContextRequired,
-	isAstraRemoteModel,
+	isAstraRemoteMode,
 	REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE,
+	isAstraRemoteModel,
+	type AstraMode,
 } from "./activation";
-import { resolveAstraCodexAuth } from "./auth";
+import { resolveAstraCodexAuth, wrapNativeCodexOAuthForAstra } from "./auth";
 import {
 	ASTRA_WINDOW_MESSAGE_TYPE,
 	createAstraCodexProvider,
@@ -37,11 +44,6 @@ const REQUIRED_HANDLER_VERSION = 1;
 const REMOTE_WINDOW_COMPACTION_SUMMARY = "[Astra remote context-window boundary; no plaintext conversation summary was generated.]";
 const EMPTY_PARAMETERS = Type.Object({}, { additionalProperties: false });
 const ASTRA_TOOL_NAMES = ["history", "notes", "new_context", "get_context_remaining"];
-
-interface AstraWindowDetails {
-	readonly protocol: 1;
-	readonly window: AstraWindowIdentity;
-}
 
 interface AstraRequiredContextHandlerAPI extends ExtensionAPI {
 	getToolDefinition(name: string): ToolDefinition | undefined;
@@ -115,7 +117,7 @@ function compactRemoteWindowBeforePrompt(ctx: ExtensionContext): Promise<void> {
 }
 
 function isWindowMarker(entry: SessionEntry): boolean {
-	return entry.type === "custom_message" && entry.customType === ASTRA_WINDOW_MESSAGE_TYPE;
+	return (entry.type === "custom" || entry.type === "custom_message") && entry.customType === ASTRA_WINDOW_MESSAGE_TYPE;
 }
 
 function isAstraCompaction(entry: SessionEntry): boolean {
@@ -123,6 +125,7 @@ function isAstraCompaction(entry: SessionEntry): boolean {
 }
 
 function boundaryDetails(entry: SessionEntry): unknown {
+	if (entry.type === "custom") return entry.data;
 	if (entry.type === "custom_message" || entry.type === "compaction") return entry.details;
 	throw new Error("Astra remote context has an invalid persisted window boundary");
 }
@@ -182,6 +185,24 @@ function remoteWindowCompaction(
 	};
 }
 
+function remoteWindowBoundaryDraft(
+	ctx: ExtensionContext,
+	nextWindow: AstraWindowIdentity,
+	retainRecentContext: boolean,
+): SessionBoundaryDraft | undefined {
+	const entries = ctx.sessionManager.getBranch();
+	const firstKeptEntryId = retainRecentContext
+		? entries[findCutPoint(entries, 0, entries.length, getCompactionSettings(ctx).keepRecentTokens).firstKeptEntryIndex]?.id
+		: null;
+	if (firstKeptEntryId === undefined) return undefined;
+	return {
+		type: "compaction",
+		summary: REMOTE_WINDOW_COMPACTION_SUMMARY,
+		firstKeptEntryId,
+		details: { protocol: 1, strategy: "astra-remote-window", window: nextWindow },
+	};
+}
+
 function snapshot(ctx: ExtensionContext): SessionSnapshot {
 	return {
 		sessionId: ctx.sessionManager.getSessionId(),
@@ -235,7 +256,6 @@ function windowGuidance(window: AstraWindowIdentity): string {
 }
 
 function projectAstraMessages(messages: AgentMessage[], window: AstraWindowIdentity): AgentMessage[] {
-	if (window.windowNumber === 0) return messages;
 	let boundary = -1;
 	for (let index = 0; index < messages.length; index += 1) {
 		const message = messages[index];
@@ -280,6 +300,23 @@ function validateAstraProjection(messages: AgentMessage[], originalMessages: Age
 	}
 }
 
+function validateAstraTranscript(context: TranscriptContext, originalMessages: AgentMessage[], window: AstraWindowIdentity): void {
+	const guidance = [{ type: "text", text: windowGuidance(window) }];
+	if (context.messages.filter((message) => message.role === "user" && isDeepStrictEqual(message.content, guidance)).length !== 1) {
+		throw new Error("Astra remote context projection lost its active window guidance");
+	}
+	// Read canonical session projection at dispatch, not a prior context hook's mutable input.
+	// Stock folds system/tool declarations separately; the provider validates those tools.
+	const retained = projectAstraMessages(originalMessages, window).filter((message) =>
+		message.role !== "system" && !(message.role === "custom" && message.customType === ASTRA_WINDOW_MESSAGE_TYPE));
+	let position = 0;
+	for (const expected of convertToLlm(retained)) {
+		while (position < context.messages.length && !isDeepStrictEqual(context.messages[position], expected)) position++;
+		if (position === context.messages.length) throw new Error("Astra remote context projection lost retained task or tool context");
+		position++;
+	}
+}
+
 function validateAstraCompaction(
 	compaction: CompactionResult,
 	preparedBoundary: Pick<CompactionResult, "firstKeptEntryId" | "tokensBefore">,
@@ -311,10 +348,7 @@ function validateAstraCompaction(
 }
 
 function sendWindow(pi: ExtensionAPI, window: AstraWindowIdentity): void {
-	pi.sendMessage<AstraWindowDetails>(
-		{ customType: ASTRA_WINDOW_MESSAGE_TYPE, display: true, content: windowGuidance(window), details: { protocol: 1, window } },
-		{ triggerTurn: false },
-	);
+	pi.appendEntry(ASTRA_WINDOW_MESSAGE_TYPE, { protocol: 1, window });
 }
 
 function setAstraToolsActive(pi: ExtensionAPI, active: boolean): void {
@@ -327,8 +361,8 @@ function registerWindowTools(
 	getWindow: () => AstraWindowIdentity | undefined,
 	getPendingTransition: () => AstraWindowIdentity | undefined,
 	setPendingTransition: (window: AstraWindowIdentity | undefined) => void,
-): { readonly newContext: Pick<ToolDefinition, "name">; readonly remaining: Pick<ToolDefinition, "name"> } {
-	const newContext: ToolDefinition<typeof EMPTY_PARAMETERS, { readonly started: boolean }> = {
+): { readonly newContext: Pick<ToolDefinition, "name" | "description" | "parameters">; readonly remaining: Pick<ToolDefinition, "name" | "description" | "parameters"> } {
+	const newContext: ToolDefinition<typeof EMPTY_PARAMETERS, { readonly queued: boolean }> = {
 		name: "new_context",
 		label: "new_context",
 		description: "Start a new remote context window without a plaintext summary.",
@@ -341,11 +375,9 @@ function registerWindowTools(
 				throw new Error("Astra remote context is missing compatible persisted window state");
 			}
 			const pending = getPendingTransition();
-			if (pending && pending.sessionId === before.sessionId && pending.currentWindowId === previous.currentWindowId) {
+			if (pending && pending.sessionId === before.sessionId && pending.previousWindowId === previous.currentWindowId) {
 				throw new Error("Astra remote context already has a pending new_context transition");
 			}
-			setPendingTransition(previous);
-			let sent = false;
 			try {
 				const { accountId } = await resolveAstraCodexAuth(ctx);
 				signal?.throwIfAborted();
@@ -354,11 +386,11 @@ function registerWindowTools(
 				if (!current || current.currentWindowId !== previous.currentWindowId || current.accountId !== accountId) {
 					throw new Error("Astra remote context changed while starting a new window");
 				}
-				sendWindow(pi, createWindow(ctx, current, accountId));
-				sent = true;
-				return { content: [{ type: "text", text: "Started a new context window without a plaintext summary." }], details: { started: true } };
-			} finally {
-				if (!sent) setPendingTransition(undefined);
+				setPendingTransition(createWindow(ctx, current, accountId));
+				return { content: [{ type: "text", text: "Queued a new context window without a plaintext summary; it starts after this tool batch completes." }], details: { queued: true } };
+			} catch (error) {
+				setPendingTransition(undefined);
+				throw error;
 			}
 		},
 	};
@@ -378,7 +410,7 @@ function registerWindowTools(
 	return { newContext, remaining };
 }
 
-export default function astraRemoteContext(pi: ExtensionAPI): void {
+function registerLegacyPatchedAstraRemoteContext(pi: ExtensionAPI): void {
 	const patchedPi = pi as AstraRequiredContextHandlerAPI;
 	if (typeof patchedPi.registerContextHandler !== "function") {
 		throw new Error("Astra remote context requires Pi with the required context-handler guard patch");
@@ -594,4 +626,213 @@ export default function astraRemoteContext(pi: ExtensionAPI): void {
 	});
 	pi.on("session_before_fork", (_event, ctx) => isAstraRemoteContextRequired(ctx.sessionManager.getEntries()) ? { cancel: true } : undefined);
 	pi.on("session_before_tree", (_event, ctx) => isAstraRemoteContextRequired(ctx.sessionManager.getEntries()) ? { cancel: true } : undefined);
+}
+
+/**
+ * Stock-Pi entrypoint. Legacy protected sessions deliberately remain unclaimed rather than being
+ * silently converted from the old patched-host protocol.
+ */
+export default function astraRemoteContext(pi: ExtensionAPI): void {
+	let activeBranch: () => readonly SessionEntry[] = () => [];
+	let activeEntries: () => readonly SessionEntry[] = () => [];
+	let activeSessionId: () => string | undefined = () => undefined;
+	let activeLeafId: () => string | null = () => null;
+	let currentModel: () => Model<any> | undefined = () => undefined;
+	let activeProvider: () => Provider | undefined = () => undefined;
+	let astraProvider: Provider<"openai-codex-responses"> | undefined;
+	let pendingWindowTransition: AstraWindowIdentity | undefined;
+	let pendingFallbackStatus: number | undefined;
+	let pendingFallbackDrafted = false;
+	const astraRecoveryTools: Array<Pick<ToolDefinition, "name" | "description" | "parameters">> = [];
+
+	const currentWindow = (): AstraWindowIdentity | undefined => latestWindow(activeBranch());
+	const isRemote = (): boolean => isAstraRemoteModel(currentModel()) && isAstraRemoteMode(activeEntries());
+	const hasOwnedRecoveryTools = (): boolean => {
+		const activeTools = new Set(pi.getActiveTools());
+		const owner = pi.getCommands().find((command) => command.name === "astra" && command.source === "extension")?.sourceInfo;
+		const registeredTools = new Map(pi.getAllTools().map((tool) => [tool.name, tool]));
+		return owner !== undefined && astraRecoveryTools.length === ASTRA_TOOL_NAMES.length && astraRecoveryTools.every((expected) => {
+			const registered = registeredTools.get(expected.name);
+			return registered !== undefined && activeTools.has(expected.name) && isDeepStrictEqual(registered.sourceInfo, owner) &&
+				registered.description === expected.description && isDeepStrictEqual(registered.parameters, expected.parameters);
+		});
+	};
+	const hasLiveAstraProvider = (): boolean => astraProvider !== undefined && activeProvider() === astraProvider;
+	const remoteLookup = (requestSessionId: string | undefined): AstraWindowLookup => {
+		if (!isRemote()) return { kind: "ordinary" };
+		try {
+			const sessionId = activeSessionId();
+			if (!requestSessionId || requestSessionId !== sessionId) {
+				return { kind: "invalid", reason: "Astra remote context is missing compatible persisted window state" };
+			}
+			const window = currentWindow();
+			if (!isAstraRemoteModel(currentModel())) return { kind: "invalid", reason: `Astra remote context requires openai-codex/${ASTRA_MODEL_ID}` };
+			if (!hasLiveAstraProvider()) return { kind: "invalid", reason: "Astra remote context requires its live native provider wrapper" };
+			if (!hasOwnedRecoveryTools()) return { kind: "invalid", reason: "Astra remote context requires active owned history and notes tools" };
+			if (!window || !sessionId || window.sessionId !== sessionId) {
+				return { kind: "invalid", reason: "Astra remote context is missing compatible persisted window state" };
+			}
+			return { kind: "required", window, leafId: activeLeafId() };
+		} catch (error) {
+			return { kind: "invalid", reason: error instanceof Error ? error.message : String(error) };
+		}
+	};
+	const unregisterHostProvider = (): void => {
+		if (hasLiveAstraProvider()) pi.unregisterProvider("openai-codex");
+		astraProvider = undefined;
+	};
+	const queueFallbackToSummary = (status: number): void => {
+		if (isRemote() && pendingFallbackStatus === undefined) pendingFallbackStatus = status;
+	};
+	const registerHostProvider = (ctx: ExtensionContext): void => {
+		if (hasLiveAstraProvider()) return;
+		const native = ctx.modelRegistry.getProvider("openai-codex");
+		if (!native || native.id !== "openai-codex") throw new Error("Astra remote context requires the host OpenAI Codex provider");
+		const wrapper = createAstraCodexProvider(
+			wrapNativeCodexOAuthForAstra(native) as Provider<"openai-codex-responses">,
+			remoteLookup,
+			() => resolveAstraCodexAuth(ctx),
+			queueFallbackToSummary,
+			(context, window) => validateAstraTranscript(context, ctx.sessionManager.buildSessionProjection().messages, window),
+		);
+		pi.registerProvider(wrapper);
+		astraProvider = wrapper;
+	};
+	const activateRemote = async (ctx: ExtensionContext, persistMode: boolean): Promise<void> => {
+		assertAstraModel(ctx.model);
+		const expected = snapshot(ctx);
+		const alreadyRegistered = hasLiveAstraProvider();
+		registerHostProvider(ctx);
+		try {
+			const { accountId } = await resolveAstraCodexAuth(ctx);
+			assertSnapshotCurrent(ctx, expected);
+			if (persistMode) pi.appendEntry(ASTRA_MODE_ENTRY_TYPE, { protocol: ASTRA_MODE_PROTOCOL, mode: "remote" });
+			setAstraToolsActive(pi, true);
+			if (!currentWindow()) sendWindow(pi, createWindow(ctx, undefined, accountId));
+		} catch (error) {
+			if (!alreadyRegistered) unregisterHostProvider();
+			throw error;
+		}
+	};
+	const { history, notes } = registerAstraHistoryNotesTools(pi, currentWindow, queueFallbackToSummary);
+	const { newContext, remaining } = registerWindowTools(
+		pi,
+		currentWindow,
+		() => pendingWindowTransition,
+		(window) => { pendingWindowTransition = window; },
+	);
+	astraRecoveryTools.push(history, notes, newContext, remaining);
+
+	pi.registerCommand("astra", {
+		description: "Set Astra context mode: /astra summary or /astra remote",
+		handler: async (args, ctx) => {
+			const mode = args.trim() as AstraMode;
+			if (mode !== "summary" && mode !== "remote") throw new Error("usage: /astra summary|remote");
+			if (!isAstraRemoteModel(ctx.model)) throw new Error(`Astra mode requires openai-codex/${ASTRA_MODEL_ID}`);
+			if (mode === "summary") {
+				pi.appendEntry(ASTRA_MODE_ENTRY_TYPE, { protocol: ASTRA_MODE_PROTOCOL, mode });
+				setAstraToolsActive(pi, false);
+				unregisterHostProvider();
+				pendingWindowTransition = undefined;
+				if (ctx.hasUI) ctx.ui.notify("Astra will use normal async summary compaction.", "info");
+				return;
+			}
+			await activateRemote(ctx, true);
+			if (ctx.hasUI) ctx.ui.notify("Astra remote context is active.", "info");
+		},
+	});
+
+	pi.on("session_start", async (_event, ctx) => {
+		activeBranch = () => ctx.sessionManager.getBranch();
+		activeEntries = () => ctx.sessionManager.getEntries();
+		activeSessionId = () => ctx.sessionManager.getSessionId();
+		activeLeafId = () => ctx.sessionManager.getLeafId();
+		currentModel = () => ctx.model;
+		activeProvider = () => ctx.modelRegistry.getProvider("openai-codex");
+		pendingWindowTransition = undefined;
+		setAstraToolsActive(pi, false);
+		if (isAstraRemoteContextRequired(activeEntries())) return;
+		if (isAstraRemoteModel(ctx.model) && getAstraMode(activeEntries()) === "remote") await activateRemote(ctx, false);
+	});
+	pi.on("model_select", async (event, ctx) => {
+		if (!isAstraRemoteModel(event.model)) {
+			setAstraToolsActive(pi, false);
+			unregisterHostProvider();
+			return;
+		}
+		if (isRemote()) await activateRemote(ctx, false);
+	});
+	const fallbackBoundary = (entries: readonly SessionBoundaryDraft[], cancelled: boolean) => {
+		if (cancelled) {
+			pendingFallbackStatus = undefined;
+			pendingFallbackDrafted = false;
+			return undefined;
+		}
+		const fallbackStatus = pendingFallbackStatus;
+		if (fallbackStatus === undefined || pendingFallbackDrafted || !isRemote()) return undefined;
+		// Quarantine recovery before stock snapshots tools for the next turn.
+		// If a later hook discards the draft, the owned provider fails its tool guard.
+		setAstraToolsActive(pi, false);
+		pendingFallbackDrafted = true;
+		return {
+			entries: [
+				...entries,
+				{ type: "custom" as const, customType: ASTRA_MODE_ENTRY_TYPE, data: { protocol: ASTRA_MODE_PROTOCOL, mode: "summary" as const, reason: "remote-service-unavailable", status: fallbackStatus } },
+				{ type: "custom_message" as const, customType: "astra-remote-context-fallback", display: true, content: `Astra remote service is unavailable (${fallbackStatus}); switched to normal async summary compaction.`, details: { status: fallbackStatus } },
+			],
+		};
+	};
+	pi.on("turn_end", (event, ctx) => {
+		const fallback = fallbackBoundary(event.entries, ctx.signal?.aborted === true || event.outcome === "aborted");
+		if (fallback) return fallback;
+		// Stock still emits turn_end after a tool batch is cancelled; its assistant
+		// message can remain toolUse, so outcome alone does not capture cancellation.
+		if (ctx.signal?.aborted || event.outcome !== "completed") {
+			pendingWindowTransition = undefined;
+			return undefined;
+		}
+		if (!isRemote() || event.entries.some((entry) => entry.type === "compaction")) return undefined;
+		const current = currentWindow();
+		if (!current) throw new Error("Astra remote context is missing compatible persisted window state");
+		const pending = pendingWindowTransition;
+		if (pending && pending.previousWindowId === current.currentWindowId) {
+			const draft = remoteWindowBoundaryDraft(ctx, pending, false);
+			return draft ? { entries: [...event.entries, draft] } : undefined;
+		}
+		if (!shouldRequestRemoteWindowCompaction(ctx)) return undefined;
+		const draft = remoteWindowBoundaryDraft(ctx, createWindow(ctx, current, current.accountId), true);
+		return draft ? { entries: [...event.entries, draft] } : undefined;
+	});
+	pi.on("agent_before_settle", (event, ctx) => fallbackBoundary(event.entries, ctx.signal?.aborted === true || event.outcome === "aborted"));
+	pi.on("agent_settled", () => {
+		if (pendingFallbackDrafted) {
+			if (!isRemote()) {
+				pendingFallbackStatus = undefined;
+				pendingFallbackDrafted = false;
+				pendingWindowTransition = undefined;
+				setAstraToolsActive(pi, false);
+				unregisterHostProvider();
+			} else {
+				pendingFallbackDrafted = false;
+			}
+		}
+		// A transition is durable only after its boundary draft commits. A settled aborted
+		// turn must not leak an uncommitted new_context intent into the next prompt.
+		pendingWindowTransition = undefined;
+	});
+	pi.on("context", (event) => {
+		const lookup = remoteLookup(activeSessionId());
+		if (lookup.kind === "ordinary") return undefined;
+		if (lookup.kind === "invalid") throw new Error(lookup.reason);
+		const messages = projectAstraMessages(event.messages, lookup.window);
+		validateAstraProjection(messages, event.messages, lookup.window);
+		return { messages };
+	});
+	pi.on("session_before_compact", () => isRemote() ? { cancel: true } : undefined);
+	pi.on("session_shutdown", () => {
+		unregisterHostProvider();
+		pendingWindowTransition = undefined;
+		pendingFallbackStatus = undefined;
+		pendingFallbackDrafted = false;
+	});
 }

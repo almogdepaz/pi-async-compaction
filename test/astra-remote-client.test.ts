@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { callAstraBackend } from "../src/astra/remote-client";
+import { AstraBackendServiceUnavailableError, callAstraBackend } from "../src/astra/remote-client";
 import type { AstraWindowIdentity } from "../src/astra/provider";
 
 const context = {
@@ -140,6 +140,32 @@ test("rejects a window change that races provider authentication before fetch", 
 		resolveAuth?.({ auth: { apiKey: "fresh-token", headers: { "chatgpt-account-id": "account-1" } } });
 		await expect(request).rejects.toThrow("changed while authentication was resolving");
 		expect(fetchCalls).toBe(0);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("preserves a typed service-unavailable status without treating auth failures as fallback eligible", async () => {
+	const originalFetch = globalThis.fetch;
+	try {
+		globalThis.fetch = (async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("busy", { status: 503 })) as typeof fetch;
+		await expect(callAstraBackend(
+			context,
+			"alpha/notes/v2/read_file",
+			{ path: "state" },
+			undefined,
+			{ mode: "tokens", limit: 10_000 },
+			() => window,
+		)).rejects.toMatchObject({ name: "AstraBackendServiceUnavailableError", status: 503 });
+		globalThis.fetch = (async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("unauthorized", { status: 401 })) as typeof fetch;
+		await expect(callAstraBackend(
+			context,
+			"alpha/notes/v2/read_file",
+			{ path: "state" },
+			undefined,
+			{ mode: "tokens", limit: 10_000 },
+			() => window,
+		)).rejects.not.toBeInstanceOf(AstraBackendServiceUnavailableError);
 	} finally {
 		globalThis.fetch = originalFetch;
 	}

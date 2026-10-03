@@ -1,50 +1,32 @@
 # astra remote context (experimental)
 
-## prerelease compatibility
+## stock pi 1.0.0
 
-This document describes the `0.1.9-astra.2` prerelease, not published `0.1.8`. It requires the exact patched Pi `0.85.1` source contract based at `9767ba275f3e9a5ee0f5c5342249b629ab1b2282`; matching `0.85.1` semver alone is insufficient. Do not use it with unpatched, older, or future Pi hosts.
+the `0.1.9-astra.3` prerelease targets stock pi `1.0.0`; it does not patch pi, `node_modules`, auth storage, or the native transport. it composes the public `openai-codex` provider under the same id, so pi retains its normal Codex OAuth credential, catalog, and native stream implementations.
 
-The package loads both its normal async compactor and the Astra entrypoint. Astra remote context activates **only** when the selected model is exactly `openai-codex/gpt-6-astra` from Pi's built-in Codex subscription provider. There is no Astra environment flag and `PI_ASYNC_PREFIX_COMPACTION=0` must not be set: ordinary models keep the default async compactor.
+select `openai-codex/gpt-6-astra`. Astra starts in **summary** mode by default: normal Pi/background async summary compaction continues unchanged. Set `PI_ASTRA_COMPACTION_MODE=remote` before starting a new session to default Astra to remote mode; set it to `summary` or leave it unset for summary mode. Any other nonempty value is rejected.
 
-## exact host build and isolated activation
+Use the per-session command to choose and persist an override:
 
-Do not apply the patch to another Pi revision. These commands clone the tagged extension, check out the exact host base, verify and apply the shipped patch, build every local Pi workspace, and run the patched CLI with an isolated configuration. Your normal `pi` command and configuration remain unchanged.
-
-```bash
-git clone https://github.com/almogdepaz/pi-async-compaction.git
-cd pi-async-compaction
-git checkout --detach v0.1.9-astra.2
-extension_repo="$PWD"
-
-cd ..
-git clone https://github.com/earendil-works/pi.git pi-astra-host
-cd pi-astra-host
-git checkout --detach 9767ba275f3e9a5ee0f5c5342249b629ab1b2282
-git apply --check "$extension_repo/patches/pi-astra-required-context-handler-9767ba275f3e.patch"
-git apply "$extension_repo/patches/pi-astra-required-context-handler-9767ba275f3e.patch"
-git diff --check
-npm ci --ignore-scripts
-npm run build
-
-export PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.2"
-node packages/coding-agent/dist/cli.js install git:github.com/almogdepaz/pi-async-compaction@v0.1.9-astra.2
-node packages/coding-agent/dist/cli.js
+```text
+/astra summary
+/astra remote
 ```
 
-Select `openai-codex/gpt-6-astra` in a new or ordinary session. Keep using that explicit CLI path and `PI_CODING_AGENT_DIR` for Astra sessions. Removing the isolated configuration directory removes its settings and package installation; no global Pi link is replaced.
+`/astra remote` adds a versioned durable mode override and a remote-window marker. An environment-selected default does not persist an override; restarting an explicitly selected session does not duplicate its choice. Its Astra requests force native SSE and use the public injected `fetch` boundary to revalidate auth/window state before each native retry. Ordinary Codex models and summary-mode Astra requests retain their supplied native transport and options.
 
-On selection, existing ordinary context remains present and Astra adds its durable remote-window boundary. Thereafter the default async compactor is excluded for that persisted session; Astra supplies no-summary rollover instead. After an Astra turn, rollover is deferred before the next request when the shared `PI_ASYNC_PREFIX_COMPACTION_START_RATIO` threshold is exceeded and compaction remains enabled. Selecting an ordinary or API-key model after that boundary fails closed before provider dispatch. Start a new ordinary session rather than downgrading a protected Astra session.
+`summary` removes the remote wrapper for subsequent requests and returns to normal async summary compaction. If remote requests end with a structured HTTP `429` or `5xx` service response, Astra visibly records the same summary-mode fallback. Authentication/account failures, malformed persisted state or ciphertext, cancellations, redirects, and other HTTP statuses do not fall back.
 
-Astra preserves Pi's native Codex transport and both public stream profiles. Host OAuth derives the account from the bearer, including legacy credentials without stored account metadata, and rejects conflicting stored metadata. Activation persists that account binding. Each generation attempt rechecks the live account and request identity; same-account bearer refresh is allowed, while account swaps are rejected. It sends history/notes credentials only to `https://chatgpt.com/backend-api/codex/alpha/...`, rejects redirects, and does not implement login, refresh, credential storage, model discovery, provider fallback, or a model switch.
+Remote mode preserves encrypted history/notes replay. `new_context` acknowledges a queued transition; the window becomes durable only at the successful boundary after the tool batch. Explicit rollover retains no conversational tail; automatic rollover retains the safe recent tail, including tool-call/result pairs. Cancellation discards pending transitions. Normal summary compaction is cancelled only for the exact Astra model while remote mode is active.
 
-The entrypoint requires the accompanying Pi core patch at `patches/pi-astra-required-context-handler-9767ba275f3e.patch`, pinned to Pi core `9767ba275f3e9a5ee0f5c5342249b629ab1b2282` (the isolated host is 0.85.1). Affected sessions persist a required handler marker and patched Pi rejects dispatch or compaction when this entrypoint is missing, disabled, reloaded without its handler, malformed, or version-incompatible. Root development dependencies remain 0.84.4 for typechecking; they do not contain the Astra model and are not evidence of runnable Astra compatibility. Run the real-host trigger regression explicitly with `PI_ASTRA_HOST_NODE_MODULES=/absolute/path/to/node_modules bun test test/astra-trigger.integration.test.ts`; it skips only when that variable is unset and fails for an invalid supplied fixture. Set `PI_ASTRA_EXTENSION_PATH` to test packaged extension bytes instead of checkout source. Older Pi versions ignore the marker: loading raw JSONL there is unsupported and is not forward-security.
+Eligible terminal generation or history/notes failures record one visible summary-mode transition at a safe boundary. Recovery tools are disabled before the immediate continuation, not only at settlement; discarded or corrupt fallback drafts cannot reopen remote dispatch. Failed notes mutations are not replayed. Later retries, cancellation, or account changes cannot reuse an earlier service status to authorize fallback.
 
-Selecting Astra requests backend ingestion. This does **not** prove account eligibility: the private service can reject any operation, and no live entitlement, ingestion, rollover, restart, fork, tree, or recall claim is made here. Fork and tree navigation are blocked once a required remote session is active; local session ids are not presented as remote history clones. Account changes are rejected; stop and start a new remote session instead.
+For installation and the distinction from older tags, see the [README prerelease guidance](../README.md#astra-prerelease). The legacy host patch remains in the repository for historical reference but is excluded from this stock package.
 
-Context hooks may add guidance, but cannot delete, reorder, or replace retained task/tool messages. Final payload hooks cannot rewrite the protected native input or model. Compaction validates the original retained-tail boundary before committing; cancelled preparation publishes no window, and duplicate pending `new_context` calls are rejected. Reload restores the host provider before rewrapping it.
+## limits and legacy sessions
 
-A reply without `encrypted_output` is a valid plaintext receipt. A present empty or malformed ciphertext is rejected. Images require supported MIME types and canonical base64 within the response/image bounds; this is not a full image-decoder security audit.
+This is extension-owned behavior, not a global host guard. Disabling/removing the extension or switching providers leaves stock Pi behavior in control. Do not open or migrate sessions containing the old `pi.required-context-handler` marker: they are legacy patched-host sessions and are intentionally not silently adopted by this implementation.
 
-Recovered notes/history/images are untrusted model content. Remote replies are bounded before JSON parsing; ciphertext is rejected rather than truncated. History and note write failures are surfaced as failures, not silently routed to local storage. The active Pi JSONL remains canonical; `new_context` inserts a persistent window marker and projects from that marker without a plaintext fallback summary.
+Use a separate model runtime per remote session: same-id provider registration is runtime-global. Shared-runtime requests with the wrong session identity are rejected, not multiplexed. Tool ownership checks use public registration/source metadata; arbitrary same-process extensions are not a security isolation boundary. Later context-hook removal/reordering of retained messages is checked again in the owned provider, but stock has no final mandatory boundary validator against competing extensions.
 
-Source attribution: [`src/astra/ATTRIBUTION.md`](../src/astra/ATTRIBUTION.md).
+No live backend entitlement, migration, installation, or credential claim is made here. Recovered history, notes, and images remain untrusted model content.

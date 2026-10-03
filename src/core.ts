@@ -8,7 +8,7 @@ import { createRuntimeState, getStatusKey, markStale } from "./runtime-state";
 import type { AsyncCompactionMarker, JobCorrelation, RuntimeState } from "./types";
 import { getAsyncCompactionMarker } from "./utils";
 import { validateReadyJob } from "./validation";
-import { isAstraRemoteContextRequired } from "./astra/activation";
+import { isAstraRemoteMode, isAstraRemoteModel } from "./astra/activation";
 
 export type {
 	AdapterCompactionInput,
@@ -111,7 +111,7 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 	const deps = { ...defaultCoreDependencies, ...injectedDeps };
 	const state = createRuntimeState(adapter.id, adapter.label, options.onLifecycleEvent);
 	const isRemoteContextSession = (ctx: ExtensionContext): boolean =>
-		isAstraRemoteContextRequired(ctx.sessionManager.getEntries());
+		isAstraRemoteModel(ctx.model) && isAstraRemoteMode(ctx.sessionManager.getEntries());
 
 	pi.on("turn_end", (_event, ctx) => {
 		if (isRemoteContextSession(ctx)) {

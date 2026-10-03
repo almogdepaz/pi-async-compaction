@@ -40,7 +40,7 @@ describe("Pi settings", () => {
 			} as unknown as ExtensionContext;
 
 			expect(getCompactionSettings(ctx)).toEqual({ enabled: true, reserveTokens: 12_345, keepRecentTokens: 2_345 });
-			expect(getRetrySettings(ctx)).toEqual({ enabled: false, maxRetries: 2, baseDelayMs: 300 });
+			expect(getRetrySettings(ctx)).toEqual({ enabled: false, maxRetries: 2, baseDelayMs: 300, maxAgentDelayMs: 60_000 });
 		} finally {
 			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

@@ -2,6 +2,8 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
+import * as astraActivation from "../src/astra/activation";
+import * as astraProvider from "../src/astra/provider";
 import { isAstraRemoteModel, REQUIRED_CONTEXT_HANDLER_ENTRY_TYPE } from "../src/astra/activation";
 import astraRemoteContext from "../src/astra/index";
 
@@ -12,13 +14,45 @@ const model = {
 	baseUrl: "https://chatgpt.com/backend-api",
 };
 
+test("defaults Astra to summary unless PI_ASTRA_COMPACTION_MODE selects remote", () => {
+	const getAstraMode = (astraActivation as Record<string, unknown>).getAstraMode;
+	expect(typeof getAstraMode).toBe("function");
+	if (typeof getAstraMode !== "function") return;
+	expect(getAstraMode([], {})).toBe("summary");
+	expect(getAstraMode([], { PI_ASTRA_COMPACTION_MODE: "remote" })).toBe("remote");
+	expect(getAstraMode([], { PI_ASTRA_COMPACTION_MODE: "summary" })).toBe("summary");
+	expect(() => getAstraMode([], { PI_ASTRA_COMPACTION_MODE: "1" })).toThrow("PI_ASTRA_COMPACTION_MODE");
+});
+
+test("persists valid slash-selected Astra modes and rejects malformed durable modes", () => {
+	const getAstraMode = (astraActivation as Record<string, unknown>).getAstraMode;
+	const modeEntryType = (astraActivation as Record<string, unknown>).ASTRA_MODE_ENTRY_TYPE;
+	expect(typeof getAstraMode).toBe("function");
+	expect(typeof modeEntryType).toBe("string");
+	if (typeof getAstraMode !== "function" || typeof modeEntryType !== "string") return;
+	expect(getAstraMode([{ type: "custom", customType: modeEntryType, data: { protocol: 1, mode: "remote" } }], {})).toBe("remote");
+	expect(getAstraMode([{ type: "custom", customType: modeEntryType, data: { protocol: 1, mode: "summary" } }], { PI_ASTRA_COMPACTION_MODE: "remote" })).toBe("summary");
+	expect(() => getAstraMode([{ type: "custom", customType: modeEntryType, data: { mode: "remote" } }], {})).toThrow("malformed persisted Astra mode");
+	expect(() => getAstraMode([{ type: "custom", customType: modeEntryType, data: { protocol: 1, mode: "invalid" } }], {})).toThrow("malformed persisted Astra mode");
+});
+
+test("classifies only structured eligible remote-service statuses for summary fallback", () => {
+	const isEligibleAstraServiceUnavailableStatus = (astraProvider as Record<string, unknown>).isEligibleAstraServiceUnavailableStatus;
+	expect(typeof isEligibleAstraServiceUnavailableStatus).toBe("function");
+	if (typeof isEligibleAstraServiceUnavailableStatus !== "function") return;
+	expect(isEligibleAstraServiceUnavailableStatus(429)).toBe(true);
+	expect(isEligibleAstraServiceUnavailableStatus(503)).toBe(true);
+	expect(isEligibleAstraServiceUnavailableStatus(400)).toBe(false);
+	expect(isEligibleAstraServiceUnavailableStatus(401)).toBe(false);
+});
+
 test("matches only the bundled Astra subscription model identity", () => {
 	expect(isAstraRemoteModel(model)).toBe(true);
 	expect(isAstraRemoteModel({ ...model, id: "gpt-5.6-terra" })).toBe(false);
 	expect(isAstraRemoteModel({ ...model, provider: "openai" })).toBe(false);
 });
 
-test("requests remote-window compaction at the shared configured start ratio", async () => {
+test("summary-mode Astra does not request remote-window compaction", async () => {
 	const cwd = await mkdtemp(join(tmpdir(), "pi-astra-trigger-"));
 	const previousRatio = process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO;
 	const previousEnabled = process.env.PI_ASYNC_PREFIX_COMPACTION;
@@ -33,6 +67,7 @@ test("requests remote-window compaction at the shared configured start ratio", a
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 		astraRemoteContext({
 			registerContextHandler: () => undefined,
+			registerCommand: () => undefined,
 			registerTool: () => undefined,
 			getAllTools: () => [],
 			getToolDefinition: () => undefined,
@@ -57,27 +92,26 @@ test("requests remote-window compaction at the shared configured start ratio", a
 		});
 
 		turnEnd({}, context(20_001));
-		expect(requests).toBe(1);
 		turnEnd({}, context(20_000));
 		turnEnd({}, context(null));
 		turnEnd({}, context(19_999));
-		expect(requests).toBe(1);
+		expect(requests).toBe(0);
 		expect(() => turnEnd({}, {
 			...context(20_001),
 			getContextUsage: () => {
 				throw new Error("unexpected usage failure");
 			},
-		})).toThrow("unexpected usage failure");
+		})).not.toThrow();
 		process.env.PI_ASYNC_PREFIX_COMPACTION = "0";
 		turnEnd({}, context(20_001));
-		expect(requests).toBe(1);
+		expect(requests).toBe(0);
 		delete process.env.PI_ASYNC_PREFIX_COMPACTION;
 		await writeFile(join(cwd, ".pi", "settings.json"), JSON.stringify({
 			compaction: { enabled: false, reserveTokens: 1_000, keepRecentTokens: 1 },
 		}));
 		turnEnd({}, context(20_001));
 		turnEnd({}, context(20_001, false));
-		expect(requests).toBe(1);
+		expect(requests).toBe(0);
 	} finally {
 		if (previousRatio === undefined) delete process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO;
 		else process.env.PI_ASYNC_PREFIX_COMPACTION_START_RATIO = previousRatio;
@@ -87,9 +121,9 @@ test("requests remote-window compaction at the shared configured start ratio", a
 	}
 });
 
-test("activates the model-selected entrypoint with a bound account and provider bridge", async () => {
-	const prior = process.env.PI_ASTRA_REMOTE_CONTEXT;
-	delete process.env.PI_ASTRA_REMOTE_CONTEXT;
+test("summary-mode Astra leaves the host provider and session untouched", async () => {
+	const prior = process.env.PI_ASTRA_COMPACTION_MODE;
+	delete process.env.PI_ASTRA_COMPACTION_MODE;
 	const entries: Array<{ customType: string; data: unknown }> = [];
 	const sent: Record<string, unknown>[] = [];
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
@@ -104,6 +138,7 @@ test("activates the model-selected entrypoint with a bound account and provider 
 			registerContextHandler: (_id: string, _version: number, assertActive: () => void) => {
 				contextHandler = assertActive;
 			},
+			registerCommand: () => undefined,
 			registerProvider: (registered: { readonly id: string }) => {
 				provider = registered;
 			},
@@ -133,41 +168,12 @@ test("activates the model-selected entrypoint with a bound account and provider 
 				getProvider: () => provider ?? nativeProvider,
 			},
 		} as never);
-		expect(entries).toHaveLength(1);
-		expect(sent).toHaveLength(1);
-		expect(provider).toBeDefined();
-		expect(contextHandler).toBeDefined();
-		expect(contextHandler).not.toThrow();
-		const compaction = await handlers.get("session_before_compact")?.({
-			reason: "threshold",
-			signal: new AbortController().signal,
-			preparation: { firstKeptEntryId: "entry-0", tokensBefore: 10_000 },
-		}, {
-			model,
-			sessionManager: {
-				getSessionId: () => "session-1",
-				getLeafId: () => null,
-				getBranch: () => sent.map((message, index) => ({ id: `entry-${index}`, type: "custom_message", ...message })),
-				getEntries: () => [{ type: "custom", customType: "pi.required-context-handler" }],
-			},
-			modelRegistry: {
-				getProviderAuth: async () => ({ auth: { apiKey: "token-1", headers: { "chatgpt-account-id": "account-1" } } }),
-			},
-		} as never);
-		expect(compaction).toMatchObject({
-			compaction: {
-				summary: "[Astra remote context-window boundary; no plaintext conversation summary was generated.]",
-				firstKeptEntryId: "entry-0",
-				details: {
-					protocol: 1,
-					strategy: "astra-remote-window",
-					window: { sessionId: "session-1", accountId: "account-1", windowNumber: 1 },
-				},
-			},
-		});
-		expect(sent).toHaveLength(1);
+		expect(entries).toHaveLength(0);
+		expect(sent).toHaveLength(0);
+		expect(provider).toBeUndefined();
+		expect(contextHandler).toBeUndefined();
 	} finally {
-		if (prior === undefined) delete process.env.PI_ASTRA_REMOTE_CONTEXT;
-		else process.env.PI_ASTRA_REMOTE_CONTEXT = prior;
+		if (prior === undefined) delete process.env.PI_ASTRA_COMPACTION_MODE;
+		else process.env.PI_ASTRA_COMPACTION_MODE = prior;
 	}
 });

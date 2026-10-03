@@ -59,14 +59,21 @@ pi -e .
 
 ## astra prerelease
 
-The `0.1.9-astra.2` Astra prerelease is not compatible with ordinary Pi installs. It requires the exact patched Pi `0.85.1` contract; semver matching alone is insufficient. Follow [the exact-base patch, build, and isolated activation procedure](docs/astra-remote-context.md#exact-host-build-and-isolated-activation).
+The `0.1.9-astra.3` prerelease targets **stock Pi `1.0.0`**, without a host patch. See [Astra modes, fallback policy and isolation limits](docs/astra-remote-context.md). Older `0.1.9-astra.0`–`.2` tags still require patched Pi `0.85.1`; do not migrate their protected sessions into this release.
+
+Use the stock `1.0.0` CLI and a fresh session directory:
 
 ```bash
-cd /path/to/pi-astra-host
-PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.2" node packages/coding-agent/dist/cli.js install git:github.com/almogdepaz/pi-async-compaction@v0.1.9-astra.2
+PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.3" pi install npm:pi-async-compaction@0.1.9-astra.3
 ```
 
-Do not run the normal installation commands above for this prerelease; they continue to install published `0.1.8` into ordinary Pi.
+Or install the exact git tag:
+
+```bash
+PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.3" pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.9-astra.3
+```
+
+The npm `astra` channel selects this prerelease; stable `latest` and the normal tagged installation above remain `0.1.8`. Do not co-load the stable and prerelease compactor copies.
 
 ## demo
 
@@ -98,7 +105,7 @@ Async compaction precomputes summaries early, then applies them only at a safe b
 
 1. after a turn, if context usage crosses the async start threshold, a background summary starts
 2. the background job reuses Pi's compaction preparation/generation behavior so the summary stays Pi-compatible
-3. when the exact patched host accepts a ready-summary checkpoint during an active turn, the extension applies it before queued steering or follow-up delivery without aborting
+3. on legacy patched hosts exposing a ready-summary checkpoint, a ready result can apply before queued steering or follow-up delivery without aborting; stock `1.0.0` does not expose that checkpoint
 4. if Pi is idle, the extension applies the ready summary through Pi's normal compaction flow
 5. if the checkpoint is unavailable or rejects the request, an abortable active turn over the async threshold retains the established abort-and-compact fallback
 6. otherwise the ready summary is kept for a later safe boundary and Pi's status bar shows `<adapter label>: ready`
@@ -161,7 +168,7 @@ No. It preserves Pi's normal compaction behavior. Manual `/compact`, threshold c
 
 ### Does it interrupt active turns?
 
-Usually no. On the exact patched Astra host, a valid ready summary requests a non-aborting checkpoint before queued work. If that checkpoint is unavailable or rejects the request and an abortable active turn is already over the async threshold, the extension uses the established abort-and-compact fallback and automatically sends `continue` after Pi persists the compaction.
+Usually no. A ready summary waits for a safe idle boundary. On stock `1.0.0`, an abortable active turn already over the async threshold uses the established abort-and-compact fallback and automatically sends `continue` after Pi persists the compaction. The non-aborting ready-summary checkpoint belongs to legacy patched hosts, not this stock contract. Astra remote mode instead commits remote-window boundaries without generating summaries.
 
 ### What should agents search for?
 
@@ -212,7 +219,7 @@ bun run check
 bun pm pack --dry-run
 ```
 
-Published `0.1.8` was tested against Pi `0.84.3` and `0.84.4`, with peer range `>=0.84.3 <0.85.0`. The `0.1.9-astra.2` prerelease instead requires the exact patched Pi `0.85.1` build; semver compatibility alone is insufficient. Do not co-load the published and prerelease compactor copies in one Pi runtime.
+Published `0.1.8` was tested against Pi `0.84.3` and `0.84.4`, with peer range `>=0.84.3 <0.85.0`. The `0.1.9-astra.3` prerelease pins stock Pi `1.0.0` peers, development dependencies and lockfile. CI validates that exact host and sets `PI_ASTRA_HOST_NODE_MODULES` to its installed `node_modules`, exercising stock integration tests instead of silently skipping them. For local stock integration verification, set that variable to an absolute path to stock `1.0.0` dependencies; without it, those tests skip. These fixtures use synthetic credentials and isolated transport responses, not live backend entitlement checks. Do not co-load the published and prerelease compactor copies in one Pi runtime.
 
 ## changelog
 

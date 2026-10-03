@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import {
 	assertFinalRecoveryNamespaces,
 	replayEncryptedToolOutputs,
@@ -56,28 +57,28 @@ test("rejects missing or duplicate final recovery namespaces", () => {
 test.each([null, 7, ""])("rejects malformed persisted encrypted output %p rather than replaying status text", (encrypted) => {
 	expect(() => replayEncryptedToolOutputs(
 		{ input: [{ type: "function_call_output", call_id: "call", output: "context operation completed" }] },
-		{ messages: [{ role: "toolResult", toolCallId: "call", toolName: "history", content: [{ type: "text", text: "context operation completed" }], details: { astraHistoryNotes: { encrypted_output: encrypted } }, isError: false, timestamp: 0 }] },
+		normalizeContext({ messages: [{ role: "toolResult", toolCallId: "call", toolName: "history", content: [{ type: "text", text: "context operation completed" }], details: { astraHistoryNotes: { encrypted_output: encrypted } }, isError: false, timestamp: 0 }] }),
 	)).toThrow("invalid persisted encrypted output");
 });
 
 test("rejects malformed owned recovery metadata rather than treating it as an ordinary result", () => {
 	expect(() => replayEncryptedToolOutputs(
 		{ input: [{ type: "function_call_output", call_id: "call", output: "context operation completed" }] },
-		{ messages: [{ role: "toolResult", toolCallId: "call", toolName: "history", content: [], details: { astraHistoryNotes: null }, isError: false, timestamp: 0 }] },
+		normalizeContext({ messages: [{ role: "toolResult", toolCallId: "call", toolName: "history", content: [], details: { astraHistoryNotes: null }, isError: false, timestamp: 0 }] }),
 	)).toThrow("invalid persisted recovery metadata");
 });
 
 test("keeps valid persisted plaintext receipts when ciphertext is absent", () => {
 	const payload = { input: [{ type: "function_call_output", call_id: "call", output: '{"written":true}' }] };
-	expect(replayEncryptedToolOutputs(payload, {
+	expect(replayEncryptedToolOutputs(payload, normalizeContext({
 		messages: [{ role: "toolResult", toolCallId: "call", toolName: "notes", content: [{ type: "text", text: '{"written":true}' }], details: { astraHistoryNotes: { written: true } }, isError: false, timestamp: 0 }],
-	})).toEqual(payload);
+	}))).toEqual(payload);
 });
 
 test("replays encrypted tool output instead of displayed status text", () => {
 	const payload = replayEncryptedToolOutputs(
 		{ input: [{ type: "function_call_output", call_id: "call-1", output: "context operation completed" }] },
-		{
+		normalizeContext({
 			messages: [{
 				role: "toolResult",
 				toolCallId: "call-1|item-1",
@@ -87,7 +88,7 @@ test("replays encrypted tool output instead of displayed status text", () => {
 				isError: false,
 				timestamp: 0,
 			}],
-		},
+		}),
 	);
 	expect(payload).toEqual({
 		input: [{

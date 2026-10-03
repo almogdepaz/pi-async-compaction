@@ -1,5 +1,13 @@
 # changelog
 
+## 0.1.9-astra.3 — 2026-10-03
+
+- targets stock Pi `1.0.0` through public provider, tool and session-boundary APIs; no host patch. earlier Astra tags retain their patched-host contract and legacy sessions are not migrated.
+- defaults Astra to summary compaction; `/astra remote` opts into durable remote windows with encrypted history/notes replay and native Codex OAuth.
+- falls back visibly to summary mode only for terminal typed HTTP `429`/`5xx` failures, disabling recovery tools before continuation without replaying failed mutations. cancellation and integrity/auth failures remain hard failures.
+- excludes the legacy host patch from the package; its repository artifact and unreachable legacy implementation remain pending separate cleanup. peers, development dependencies and CI target exact stock `1.0.0`, including real stock session/provider fixtures.
+- updates the `brace-expansion` dependency override to `5.0.12`, resolving the reported denial-of-service advisories.
+
 ## 0.1.9-astra.2 — 2026-09-20
 
 - fixed Astra remote-window rollover to honor `PI_ASYNC_PREFIX_COMPACTION_START_RATIO`, using the shared 80% default when unset instead of always waiting for Pi's reserve-token threshold.
