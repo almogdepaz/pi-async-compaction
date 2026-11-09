@@ -162,13 +162,10 @@ describe("startAsyncJob lifecycle", () => {
 		expect(compactArguments?.[3]).toEqual({ Authorization: "Bearer ambient-token" });
 	});
 
-	test("rejects resolved requests without an API key or usable headers", async () => {
-		expect(
-			buildWithAuth({
-				ok: true,
-				headers: { Authorization: null },
-			}),
-		).rejects.toThrow("No API key or headers for openai");
+	test("accepts successful native auth without an API key or usable headers", async () => {
+		const { compactArguments } = await buildWithAuth({ ok: true, headers: { Authorization: null } });
+		expect(compactArguments?.[2]).toBeUndefined();
+		expect(compactArguments?.[7]).toBeFunction();
 	});
 
 	test("sets cli status line while a background job is pending", () => {

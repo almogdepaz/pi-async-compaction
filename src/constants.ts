@@ -17,6 +17,7 @@ export const InvalidationReason = {
 	THINKING_CHANGED: "thinking_changed",
 	SETTINGS_CHANGED: "settings_changed",
 	CUSTOM_INSTRUCTIONS: "custom_instructions",
+	CONTEXT_EDITED: "context_edited",
 	TOO_LARGE: "too_large",
 	SUPERSEDED: "superseded",
 	SYNC_FALLBACK: "sync_fallback",

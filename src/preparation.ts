@@ -2,7 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext, findCutPoint, getLatestCompactionEntry } from "@earendil-works/pi-coding-agent";
 import type { FileOperations, LocalCompactionPreparation, ResolvedCompactionSettings } from "./types";
-import { estimateContextUsageTokens, getAsyncCompactionMarker, getStringArrayProperty } from "./utils";
+import { estimateContextUsageTokens, getAsyncCompactionMarker, getStringArrayProperty, hasContextEdits } from "./utils";
 
 function createFileOps(): FileOperations {
 	return {
@@ -13,13 +13,14 @@ function createFileOps(): FileOperations {
 }
 
 function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOperations): void {
-	if (message.role !== "assistant") return;
-	for (const block of message.content) {
-		if (block.type !== "toolCall") continue;
-		const path = typeof block.arguments.path === "string" ? block.arguments.path : undefined;
+	const calls = message.role === "toolResult"
+		? message.nestedCalls?.calls ?? []
+		: message.role === "assistant" ? message.content.filter((block) => block.type === "toolCall") : [];
+	for (const call of calls) {
+		const path = typeof call.arguments?.path === "string" ? call.arguments.path : undefined;
 		if (!path) continue;
 
-		switch (block.name) {
+		switch (call.name) {
 			case "read":
 				fileOps.read.add(path);
 				break;
@@ -35,7 +36,7 @@ function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOperation
 
 function entryToMessage(entry: SessionEntry): AgentMessage | undefined {
 	if (entry.type === "message") {
-		return entry.message;
+		return entry.message.role === "system" ? undefined : entry.message;
 	}
 	if (entry.type === "custom_message") {
 		return {
@@ -62,6 +63,7 @@ export function prepareAsyncCompaction(
 	pathEntries: readonly SessionEntry[],
 	settings: ResolvedCompactionSettings,
 ): LocalCompactionPreparation | undefined {
+	if (hasContextEdits(pathEntries)) return undefined;
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1]?.type === "compaction") {
 		return undefined;
 	}

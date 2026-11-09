@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { getAsyncCompactionMarker, getCompactionSettings, getRetrySettings, getThinkingLevel } from "../src/utils";
-import { ownAsyncMarker } from "./test-fixtures";
+import { ownAsyncMarker, testModel } from "./test-fixtures";
 
 const timestamp = "2026-08-12T00:00:00.000Z";
 
@@ -23,14 +23,14 @@ describe("Pi settings", () => {
 			await writeFile(
 				join(agentDir, "settings.json"),
 				JSON.stringify({
-					compaction: { enabled: true, reserveTokens: 12_345, keepRecentTokens: 2_345 },
+					compaction: { enabled: true, reserveTokens: 12_345, keepRecentTokens: 2_345, modelOverrides: { "openai/test-model": { reserveTokens: 8_000 } } },
 					retry: { enabled: false, maxRetries: 2, baseDelayMs: 300 },
 				}),
 			);
 			await writeFile(
 				join(projectSettingsDir, "settings.json"),
 				JSON.stringify({
-					compaction: { enabled: false, reserveTokens: 99, keepRecentTokens: 9 },
+					compaction: { enabled: false, reserveTokens: 99, keepRecentTokens: 9, modelOverrides: { "openai/test-model": { reserveTokens: 99 } } },
 					retry: { enabled: true, maxRetries: 9, baseDelayMs: 1 },
 				}),
 			);
@@ -40,7 +40,9 @@ describe("Pi settings", () => {
 			} as unknown as ExtensionContext;
 
 			expect(getCompactionSettings(ctx)).toEqual({ enabled: true, reserveTokens: 12_345, keepRecentTokens: 2_345 });
-			expect(getRetrySettings(ctx)).toEqual({ enabled: false, maxRetries: 2, baseDelayMs: 300 });
+			expect(getRetrySettings(ctx)).toEqual({ enabled: false, maxRetries: 2, baseDelayMs: 300, maxAgentDelayMs: 60_000 });
+			expect(getCompactionSettings({ ...ctx, model: testModel() })).toEqual({ enabled: true, reserveTokens: 8_000, keepRecentTokens: 2_345 });
+			expect(getCompactionSettings({ ...ctx, model: { ...testModel(), id: "other-model" } })).toEqual({ enabled: true, reserveTokens: 12_345, keepRecentTokens: 2_345 });
 		} finally {
 			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

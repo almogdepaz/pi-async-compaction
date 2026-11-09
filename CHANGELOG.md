@@ -1,5 +1,13 @@
 # changelog
 
+## 0.1.9 — 2026-11-09
+
+- verified compatibility with Pi `1.3.0`, `1.4.0`, and `1.5.0`; limited peer dependencies and CI to those tested releases.
+- route background compaction through the session's native provider registry, including providers whose successful authentication does not return an API key or headers.
+- honor per-model compaction settings, exclude system messages from summaries, and preserve nested codemode file-operation metadata.
+- defer context-edited branches to Pi's synchronous compaction and invalidate summaries prepared before an edit.
+- this stable maintenance release does not include Astra prerelease features; the Astra channel remains separate.
+
 ## 0.1.8 — 2026-08-31
 
 - aligned ready-summary application with Pi `0.84`'s `agent_settled` lifecycle and added correlated handling for extension compaction failures.

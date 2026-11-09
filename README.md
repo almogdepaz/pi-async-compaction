@@ -42,7 +42,7 @@ pi install npm:pi-async-compaction
 From git:
 
 ```bash
-pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.8
+pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.9
 ```
 
 Local development:
@@ -95,6 +95,8 @@ Async compaction precomputes summaries early, then applies them only at a safe b
 8. otherwise Pi falls back to normal synchronous compaction
 
 Manual `/compact` and Pi's normal threshold/overflow compaction can also use a ready async summary.
+
+Branches with active context edits use Pi's normal synchronous compaction. A context edit also invalidates any previously prepared summary, so omitted or replaced raw content cannot be applied from that summary. Async preparation resumes after compaction moves past those edits.
 
 Manual trigger, bypassing the early-start threshold:
 
@@ -201,7 +203,9 @@ bun run check
 bun pm pack --dry-run
 ```
 
-This package is tested against Pi `0.84.3` and `0.84.4`. Its declared peer range is `>=0.84.3 <0.85.0`; Pi provides the core packages at runtime.
+This package is tested against Pi `1.3.0`, `1.4.0`, and `1.5.0`. Its declared peers are limited to those exact releases (`1.3.0 || 1.4.0 || 1.5.0`); Pi provides the core packages at runtime. Older Pi `0.84.3`–`0.84.4` hosts should keep `pi-async-compaction@0.1.8`.
+
+Version `0.1.9` is a stable maintenance release, not a promotion of the separate Astra prerelease channel.
 
 ## changelog
 

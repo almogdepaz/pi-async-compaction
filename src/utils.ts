@@ -1,7 +1,7 @@
 import type { Api, Model, RetryPolicy, Usage } from "@earendil-works/pi-ai";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { buildSessionContext, calculateContextTokens, estimateTokens, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, buildSessionProjection, calculateContextTokens, estimateTokens, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_START_RATIO, DEFAULT_TIMEOUT_MS } from "./constants";
 import type { AsyncCompactionMarker, ResolvedCompactionSettings } from "./types";
 
@@ -90,7 +90,7 @@ export function getAsyncCompactionMarker(value: unknown): AsyncCompactionMarker 
 }
 
 export function getCompactionSettings(ctx: ExtensionContext): ResolvedCompactionSettings {
-	return SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() }).getCompactionSettings();
+	return SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() }).getCompactionSettings(ctx.model);
 }
 
 export function getRetrySettings(ctx: ExtensionContext): RetryPolicy {
@@ -104,6 +104,12 @@ export function getThinkingLevel(pathEntries: readonly SessionEntry[]): Thinking
 
 function isThinkingLevel(value: unknown): value is ThinkingLevel {
 	return typeof value === "string" && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value);
+}
+
+// Pi does not export projection-aware compaction preparation. Let its synchronous
+// path handle active edits instead of summarizing omitted or replaced raw content.
+export function hasContextEdits(pathEntries: readonly SessionEntry[]): boolean {
+	return buildSessionProjection([...pathEntries]).entries.some((entry) => entry.sourceEntry.type === "context_edit");
 }
 
 export function isToolResultEntry(entry: SessionEntry): boolean {

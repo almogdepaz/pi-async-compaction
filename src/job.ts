@@ -56,9 +56,6 @@ export async function buildAsyncCompactionResult(
 		throw new Error(auth.error);
 	}
 	const requestHeaders = normalizeProviderHeaders(auth.headers);
-	if (!auth.apiKey && !requestHeaders) {
-		throw new Error(`No API key or headers for ${model.provider}`);
-	}
 	const requestModel = auth.baseUrl || auth.headers
 		? { ...model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}), headers: requestHeaders }
 		: model;
@@ -73,7 +70,7 @@ export async function buildAsyncCompactionResult(
 		undefined,
 		signal,
 		thinkingLevel,
-		undefined,
+		(requestModel, context, options) => ctx.modelRegistry.streamSimple(requestModel, context, options),
 		auth.env,
 		getRetrySettingsFn(ctx),
 	);
