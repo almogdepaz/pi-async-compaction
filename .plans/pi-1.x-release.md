@@ -5,18 +5,18 @@
 - user authorizes compatibility changes, regression tests, scoped commit/push/tag/npm publication; no new agent sessions or unrelated changes.
 - assumption: update stable plugin, do not promote Astra. isolated worktree `/Users/home/Dev/pi_compaction-release`, branch `release/pi-1.x-compat`, base `v0.1.8` / `5b9a70b678f23b7250f66b97789cb2777061cf3c`.
 - original checkout `/Users/home/Dev/pi_compaction` and its concurrent work remain untouched. remote main rechecked at `56fcd5f66cd57b3bb2491b5ea9133a0a0f0d7b9b`; do not merge or push main.
-- target: stable `0.1.9`; npm latest remains `0.1.8`, Astra remains `0.1.9-astra.3` before publication.
+- released stable `0.1.9`; public npm latest is `0.1.9`, and Astra remains `0.1.9-astra.3`.
 - current upstream Pi is `1.5.0`; active installed Pi is `1.4.0`. declare only verified exact releases: `1.3.0 || 1.4.0 || 1.5.0`.
 - private command evidence: `/tmp/pi-compat-release.QbHJFb`.
-- status: local implementation, matrix, review and immutable package verification complete; commit/remote CI/publication pending.
+- status: released and verified. source commit `8b769a35b5342e8bc625a7ae59a78e9d19d1b4e6`, remote tag `v0.1.9`, public registry artifact and peers verified; branch/tag CI passed. this evidence-only ledger update follows the release commit.
 
 ## plan and commit boundary
 
 1. completed: inspect current Pi docs, exported APIs, history and stable tests; establish failing compatibility coverage.
 2. completed: minimal stable-plugin changes, tested exact peer declarations, CI/docs/version/lockfile updates.
 3. completed locally: regression/parity/typecheck, final full matrix, audit, release consistency and isolated package-load checks.
-4. pending: one scoped source/release commit; push maintenance branch, verify existing CI, then push version tag, publish the tested tarball to npm latest and create a stable GitHub release. do not change Astra or merge main.
-5. pending: verify registry artifact/peers, remote tag and release; update this ledger in an evidence-only follow-up commit on the maintenance branch. never move the release tag for ledger updates.
+4. completed: scoped source/release commit pushed on the maintenance branch; branch CI verified before tag push/publication. tested tarball published to npm latest; stable GitHub release created. Astra and main unchanged.
+5. completed: registry artifact/peers, remote tag and release verified. record final evidence in this follow-up commit on the maintenance branch; release tag remains on the source commit.
 
 ordinary API adaptation, fixture corrections and version bump are authorized. stop for unavailable credentials, incompatible design choices or untestable release risk. no live model requests, credential changes, or local Pi installation changes.
 
@@ -53,13 +53,24 @@ all final checks below exited 0 unless explicitly noted.
 - SHA-1: `107cf156dfc44ffa7a2ed3b4c307be5237efb0f9`.
 - initial packed smoke failed because split-turn compaction needed two summary responses, but the test supplied one. diagnostic showed four provider calls. corrected only the private fixture; no production workaround. initial logs retained.
 - attempted old runtime-family installation failed for nonexistent Pi 1.x client/protocol versions; exact dependency manifests confirmed the corrected CI approach. failure logs retained.
-- npm/GitHub identities resolve; dry-run is not proof of publication permission or completed release.
+- actual `npm publish` exited 0. initial public metadata returned E404 while npm processed the release; a fresh subsequent lookup verified availability. initial failure evidence remains in `registry-version.json`.
 
-## limits and remaining work
+## publication verification
+
+- branch CI: https://github.com/almogdepaz/pi-async-compaction/actions/runs/42675827342 — all four jobs passed at source commit `8b769a3`.
+- tag CI: https://github.com/almogdepaz/pi-async-compaction/actions/runs/42675920046 — all four jobs passed at the same source commit.
+- stable release: https://github.com/almogdepaz/pi-async-compaction/releases/tag/v0.1.9 — published, not draft/prerelease, target commit explicitly set to the release commit.
+- registry `pi-async-compaction@0.1.9` exposes exact peers `1.3.0 || 1.4.0 || 1.5.0` for all three Pi packages. dist-tags verified: `latest=0.1.9`, `astra=0.1.9-astra.3`.
+- downloaded the public npm archive and compared it byte-for-byte with the tested archive: identical, SHA-256 `a6470fc9c1eb3eb612bfa882646ee620f636caf9f8aacb39908fb8025752fb64`.
+- all 20 packed files also match their contents at `v0.1.9`; reused the fresh three-host packed-runtime evidence because the public artifact is byte-identical.
+- remote annotated tag peels to `8b769a35b5342e8bc625a7ae59a78e9d19d1b4e6`. remote main and Astra tag still point to `56fcd5f66cd57b3bb2491b5ea9133a0a0f0d7b9b`.
+- evidence: `publish.log`, `registry-version-retry.json`, `registry-tags.json`, `registry-download.log`, `github-release.json`, `ci-release.json`, `ci-release.log`, `ci-tag.json`, `ci-tag.log` under the private evidence directory.
+
+## limits
 
 - no live provider requests or interactive desktop testing; deterministic native transports cover API wiring, auth failure, retry, cancellation and persistence.
-- local tests used Bun 1.4.2. existing CI pins Bun 1.3.9; remote CI is still a release gate.
+- local tests used Bun 1.4.2; remote branch/tag CI also passed under the repository's pinned Bun 1.3.9.
 - install scripts stayed disabled locally; blocked dependency lifecycle scripts are not required by these checks.
 - self-review only: the user disallows additional sessions.
 - context-edited branches deliberately lose async preparation until native compaction moves past retained edits.
-- pending remote CI, publication and public artifact verification; do not infer them from local checks.
+- no remaining release blocker. the installed user Pi extension was not upgraded; installation is separate from publication.
