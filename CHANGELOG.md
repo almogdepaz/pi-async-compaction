@@ -5,6 +5,7 @@
 - stopped aborting active model or tool work to apply a ready summary. over the async threshold, a ready job is now proposed as a stock Pi `turn_end` compaction draft at a completed, non-cancelled boundary that continues; final replies apply after `agent_settled`. no `continue` message is sent.
 - confirmed boundary drafts from the branch after the proposal leaf, because Pi emits no `session_compact` event for them; an unpersisted draft records an apply failure.
 - refused to prepare or apply summaries when the branch contains Pi context edits, because the summary could restore omitted raw content.
+- added exact `undici` `8.12.3` and `minimatch` `11.0.3` dependency overrides for the stock Pi `1.0.0` development host, resolving newly reported denial-of-service, certificate-validation and cache-poisoning advisories. the published package has no runtime dependencies.
 
 ## 0.1.9-astra.3 — 2026-10-03
 
