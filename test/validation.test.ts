@@ -85,6 +85,16 @@ describe("validateReadyJob", () => {
 			validationContext(validEntries()),
 			"first_kept_after_snapshot",
 		],
+		[
+			"a context edit omits summarized content after the snapshot",
+			readyJob(),
+			validationEvent(),
+			validationContext([
+				...validEntries(),
+				{ type: "context_edit", id: "e1", parentId: "a2", timestamp: new Date(0).toISOString(), targetId: "u1", replacement: null },
+			]),
+			"context_edited",
+		],
 	] as const)("rejects ready jobs when %s", (_description, job, event, ctx, reason) => {
 		expect(validateReadyJob(job, event, ctx)).toBe(reason);
 	});

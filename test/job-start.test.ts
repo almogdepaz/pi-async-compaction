@@ -372,7 +372,7 @@ describe("startAsyncJob lifecycle", () => {
 		expect(state.applyInFlight).toBeUndefined();
 	});
 
-	test("falls back to force apply when deferred compaction is rejected", () => {
+	test("keeps an active ready job ready when deferred compaction is rejected", () => {
 		const state = createRuntimeState();
 		state.status = "ready";
 		state.jobId = builtinJobId;
@@ -398,12 +398,14 @@ describe("startAsyncJob lifecycle", () => {
 			asyncJobDeps({ triggerCompaction: () => compactTriggered++ }),
 		);
 
-		expect(applied).toBe(true);
-		expect(abortCalls).toBe(1);
-		expect(compactTriggered).toBe(1);
+		expect(applied).toBe(false);
+		expect(abortCalls).toBe(0);
+		expect(compactTriggered).toBe(0);
+		expect(state.status).toBe("ready");
+		expect(state.applyInFlight).toBeUndefined();
 	});
 
-	test("force-stops the active agent before applying a ready job over the async threshold", () => {
+	test("does not abort the active agent to apply a ready job over the async threshold", () => {
 		const state = createRuntimeState();
 		state.status = "ready";
 		state.jobId = builtinJobId;
@@ -429,9 +431,12 @@ describe("startAsyncJob lifecycle", () => {
 			asyncJobDeps({ triggerCompaction: () => compactTriggered++ }),
 		);
 
-		expect(applied).toBe(true);
-		expect(abortCalls).toBe(1);
-		expect(compactTriggered).toBe(1);
+		// The job applies at the next continuing turn boundary or after settlement; see proposeBoundaryCompaction.
+		expect(applied).toBe(false);
+		expect(abortCalls).toBe(0);
+		expect(compactTriggered).toBe(0);
+		expect(state.status).toBe("ready");
+		expect(state.autoResumeAfterCompaction).toBeUndefined();
 	});
 
 	test("claims a ready job before triggering Pi compaction", () => {

@@ -1,8 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AsyncCompactionAdapter } from "./adapter";
 import { AUTO_RESUME_PROMPT, InvalidationReason } from "./constants";
-import { emitLifecycleEvent, getLifecycleDurationMs } from "./diagnostics";
-import { applyReadyCompaction, recordApplyError, startAsyncJob } from "./job";
+import { applyReadyCompaction, confirmBoundaryCompaction, handOffReadyJob, proposeBoundaryCompaction, recordApplyError, startAsyncJob } from "./job";
 import type { StartAsyncJobOutcome } from "./job";
 import { createRuntimeState, getStatusKey, markStale } from "./runtime-state";
 import type { AsyncCompactionMarker, JobCorrelation, RuntimeState } from "./types";
@@ -28,11 +27,13 @@ export interface RegisterAsyncCompactionOptions {
 
 export interface AsyncCompactionCoreDependencies {
 	readonly applyReadyCompaction: typeof applyReadyCompaction;
+	readonly proposeBoundaryCompaction: typeof proposeBoundaryCompaction;
 	readonly startAsyncJob: typeof startAsyncJob;
 }
 
 const defaultCoreDependencies: AsyncCompactionCoreDependencies = {
 	applyReadyCompaction,
+	proposeBoundaryCompaction,
 	startAsyncJob,
 };
 
@@ -113,15 +114,48 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 	const isRemoteContextSession = (ctx: ExtensionContext): boolean =>
 		isAstraRemoteModel(ctx.model) && isAstraRemoteMode(ctx.sessionManager.getEntries());
 
-	pi.on("turn_end", (_event, ctx) => {
+	const completeHandOff = (ctx: ExtensionContext): void => {
+		state.lastHandedOff = undefined;
+		state.lifecycleStartedAtMs = undefined;
+		if (ctx.hasUI) {
+			const ui = ctx.ui;
+			setTimeout(() => ui.notify(`Applied ready ${state.adapterLabel}`, "info"), 0);
+		}
+	};
+
+	// Pi emits no session_compact for a committed turn_end draft, so the branch confirms it.
+	const resolveBoundaryProposal = (ctx: ExtensionContext): void => {
+		if (confirmBoundaryCompaction(ctx, state)) completeHandOff(ctx);
+	};
+
+	pi.on("turn_start", (_event, ctx) => {
+		resolveBoundaryProposal(ctx);
+	});
+
+	pi.on("turn_end", (event, ctx) => {
+		resolveBoundaryProposal(ctx);
 		if (isRemoteContextSession(ctx)) {
 			invalidateActiveJob(ctx, state, InvalidationReason.SYNC_FALLBACK);
-			return;
+			return undefined;
+		}
+		const draft = deps.proposeBoundaryCompaction(ctx, state, {
+			outcome: event.outcome,
+			continues: event.toolResults.length > 0 || event.continue || ctx.hasPendingMessages(),
+			entries: event.entries,
+			contextEntries: event.context.contextEntries,
+		});
+		if (draft) {
+			clearCliStatus(ctx, state);
+			collapseCompactionRender(ctx);
+			// Starting another job here would snapshot the pre-compaction branch.
+			return { entries: [...event.entries, draft] };
 		}
 		deps.startAsyncJob(ctx, state, { adapter: jobAdapter, force: false });
+		return undefined;
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
+		resolveBoundaryProposal(ctx);
 		if (!isRemoteContextSession(ctx) && !ctx.hasPendingMessages()) deps.applyReadyCompaction(ctx, state);
 	});
 
@@ -158,21 +192,7 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 			return;
 		}
 
-		state.status = "idle";
-		state.ready = undefined;
-		state.reason = undefined;
-		state.applyInFlight = undefined;
-		state.lastHandedOff = {
-			adapterId: ready.adapterId,
-			jobId: ready.jobId,
-			promptVersion: ready.promptVersion,
-		};
-		emitLifecycleEvent(state.lifecycleObserver, {
-			event: "handed_off",
-			adapterId: ready.adapterId,
-			jobId: ready.jobId,
-			durationMs: getLifecycleDurationMs(state.lifecycleStartedAtMs),
-		});
+		handOffReadyJob(state, ready);
 		clearCliStatus(ctx, state);
 		collapseCompactionRender(ctx);
 		return { compaction: ready.result };
@@ -184,14 +204,9 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 
 		const correlation = getJobCorrelation(marker);
 		if (!matchesJobCorrelation(state.lastHandedOff, correlation)) return;
-		state.lastHandedOff = undefined;
-		state.lifecycleStartedAtMs = undefined;
 		const shouldAutoResume = matchesJobCorrelation(state.autoResumeAfterCompaction, correlation);
 		if (shouldAutoResume) state.autoResumeAfterCompaction = undefined;
-		if (ctx.hasUI) {
-			const ui = ctx.ui;
-			setTimeout(() => ui.notify(`Applied ready ${state.adapterLabel}`, "info"), 0);
-		}
+		completeHandOff(ctx);
 		if (shouldAutoResume) {
 			setTimeout(() => {
 				if (!ctx.hasPendingMessages()) pi.sendUserMessage(AUTO_RESUME_PROMPT);

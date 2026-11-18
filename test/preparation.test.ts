@@ -98,6 +98,20 @@ describe("prepareAsyncCompaction", () => {
 		expect(preparation?.tokensBefore).toBe(12_345);
 	});
 
+	test("does not summarize raw content that an active context edit omits", () => {
+		const entries: SessionEntry[] = [
+			userEntry("u1", null, "secret omitted request"),
+			assistantEntry("a1", "u1", "x".repeat(1_000)),
+			userEntry("u2", "a1", "kept request"),
+			assistantEntry("a2", "u2", "y".repeat(1_000)),
+			{ type: "context_edit", id: "e1", parentId: "a2", timestamp: new Date(0).toISOString(), targetId: "u1", replacement: null },
+			userEntry("u3", "e1", "recent tail"),
+		];
+
+		// Pi's synchronous path prepares from the edited projection; the async path must not use raw entries.
+		expect(prepareAsyncCompaction(entries, settings)).toBeUndefined();
+	});
+
 	test("does not prepare a compaction when there is nothing to summarize", () => {
 		const preparation = prepareAsyncCompaction([userEntry("u1", null, "short request")], {
 			...settings,

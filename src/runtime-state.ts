@@ -20,6 +20,7 @@ export function createRuntimeState(
 		jobCounter: 0,
 		applyInFlight: undefined,
 		lastHandedOff: undefined,
+		boundaryProposal: undefined,
 		autoResumeAfterCompaction: undefined,
 		lifecycleObserver,
 		lifecycleStartedAtMs: undefined,
@@ -54,6 +55,7 @@ export function markStale(state: RuntimeState, reason: InvalidationReason): void
 	state.reason = reason;
 	state.applyInFlight = undefined;
 	state.lastHandedOff = undefined;
+	state.boundaryProposal = undefined;
 	state.autoResumeAfterCompaction = undefined;
 	state.lifecycleStartedAtMs = undefined;
 }

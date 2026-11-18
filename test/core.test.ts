@@ -7,7 +7,7 @@ import { createBuiltinPiCompactionAdapter } from "../src/adapter";
 import type { AsyncCompactionAdapter } from "../src/adapter";
 import { startAsyncJobWithDeps } from "../src/job";
 import type { RuntimeState, Snapshot } from "../src/types";
-import { asyncJobContext, asyncJobDeps, compactableEntries, settings, validationEvent } from "./test-fixtures";
+import { asyncJobContext, asyncJobDeps, compactableEntries, settings, turnEndEvent, validationEvent } from "./test-fixtures";
 
 describe("registerAsyncCompaction", () => {
 	test("registers lifecycle hooks that run a supplied adapter and hand off its compaction", async () => {
@@ -51,7 +51,7 @@ describe("registerAsyncCompaction", () => {
 		const beforeCompact = handlers.get("session_before_compact");
 		if (!turnEnd || !beforeCompact) throw new Error("expected lifecycle handlers");
 
-		turnEnd({}, { ...asyncJobContext(compactableEntries()), isIdle: () => false } as ExtensionContext);
+		turnEnd(turnEndEvent(), { ...asyncJobContext(compactableEntries()), isIdle: () => false } as ExtensionContext);
 		await Promise.resolve();
 		await Promise.resolve();
 
@@ -112,7 +112,7 @@ describe("registerAsyncCompaction", () => {
 				return true;
 			},
 		} as unknown as ExtensionContext;
-		turnEnd({}, ctx);
+		turnEnd(turnEndEvent(), ctx);
 		await Promise.resolve();
 		await Promise.resolve();
 
@@ -148,7 +148,7 @@ describe("registerAsyncCompaction", () => {
 		if (!turnEnd || !compactFailed) throw new Error("expected compaction lifecycle handlers");
 
 		const ctx = asyncJobContext(compactableEntries());
-		turnEnd({}, ctx);
+		turnEnd(turnEndEvent(), ctx);
 		if (!runtimeState) throw new Error("expected runtime state");
 		const correlation = {
 			adapterId: runtimeState.adapterId,
@@ -225,7 +225,7 @@ describe("registerAsyncCompaction", () => {
 			const turnEnd = handlers.get("turn_end");
 			const beforeCompact = handlers.get("session_before_compact");
 			if (!turnEnd || !beforeCompact) throw new Error("expected lifecycle handlers");
-			turnEnd({}, asyncJobContext(compactableEntries()));
+			turnEnd(turnEndEvent(), asyncJobContext(compactableEntries()));
 			await Promise.resolve();
 			await Promise.resolve();
 			expect(await beforeCompact(validationEvent(), asyncJobContext(compactableEntries()))).toEqual({
@@ -279,11 +279,11 @@ for (const selection of ["persisted", "environment", "malformed-persisted", "mal
 			});
 			const ctx = asyncJobContext(entries) as ExtensionContext;
 			if (selection === "model-switch") {
-				turnEnd({}, { ...ctx, model: { ...ctx.model!, provider: "openai-codex", id: "gpt-6-astra", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api" } });
+				turnEnd(turnEndEvent(), { ...ctx, model: { ...ctx.model!, provider: "openai-codex", id: "gpt-6-astra", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api" } });
 				expect(starts).toBe(0);
 				handlers.get("model_select")?.({}, ctx);
 			}
-			turnEnd({}, ctx);
+			turnEnd(turnEndEvent(), ctx);
 			expect(starts).toBe(1);
 		} finally {
 			if (previousMode === undefined) delete process.env.PI_ASTRA_COMPACTION_MODE;

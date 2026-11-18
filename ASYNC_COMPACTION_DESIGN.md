@@ -1,6 +1,6 @@
 # async compaction design
 
-This Pi extension precomputes Pi-compatible compaction summaries in the background, usually waits for a safe idle boundary before triggering Pi's compaction flow, and supplies the ready summary through Pi's normal compaction hook. If a ready result exists during an abortable active turn over the async threshold, it follows Pi's normal compaction behavior by aborting before compacting.
+This Pi extension precomputes Pi-compatible compaction summaries in the background, usually waits for a safe idle boundary before triggering Pi's compaction flow, and supplies the ready summary through Pi's normal compaction hook. If a ready result exists during an active turn over the async threshold, it proposes the summary as a Pi `turn_end` compaction draft at the next completed boundary that continues, without aborting.
 
 Code entrypoint: [`src/index.ts`](./src/index.ts)
 Experimental adapter entrypoint for other packages: [`src/core.ts`](./src/core.ts)
@@ -13,7 +13,7 @@ Pi compaction normally prepares a prefix of the active branch, asks the active m
 compaction summary + raw tail from firstKeptEntryId
 ```
 
-The model call is synchronous and blocks the agent. This extension moves that model call earlier by running the same compaction generation path in the background after a turn. When the background result becomes ready, the extension applies it through Pi's ordinary compaction pipeline when `ctx.isIdle()` and `!ctx.hasPendingMessages()`. If Pi is actively responding with an abort signal, has no queued messages, and current usage is still above `PI_ASYNC_PREFIX_COMPACTION_START_RATIO`, the extension aborts first and triggers Pi compaction. After Pi persists that extension-provided compaction, the extension sends `continue` once to resume work.
+The model call is synchronous and blocks the agent. This extension moves that model call earlier by running the same compaction generation path in the background after a turn. When the background result becomes ready, the extension applies it through Pi's ordinary compaction pipeline when `ctx.isIdle()` and `!ctx.hasPendingMessages()`. If Pi is actively responding and current usage is still above `PI_ASYNC_PREFIX_COMPACTION_START_RATIO`, the extension waits for a `turn_end` whose outcome is `completed`, whose signal is not aborted, and which continues (tool results, `event.continue`, or queued messages). It revalidates the job against the boundary context, rejects context edits and competing compaction drafts, and returns the summary as a compaction draft. Pi commits the draft before the next provider call. It never aborts active work and sends no `continue` message.
 
 Quality goal: async compaction should behave like Pi compaction. The extension therefore reuses Pi's exported `compact()` function for summary generation, including previous-summary merging, split-turn handling, and file-operation tags.
 
@@ -65,7 +65,7 @@ idle -> pending -> ready -> idle
               \-> stale | failed
 ```
 
-`/async-compact-now` starts a background job immediately, bypassing the early-start threshold while still respecting the enabled/model/settings/preparation guards. If a reusable ready job already exists, the command requests apply through the same apply gate; active abort-and-compact still requires current usage above the async threshold.
+`/async-compact-now` starts a background job immediately, bypassing the early-start threshold while still respecting the enabled/model/settings/preparation guards. If a reusable ready job already exists, the command requests apply through the same apply gate; active turn-boundary apply still requires current usage above the async threshold.
 
 Pending background work is shown through Pi's CLI status line.
 
@@ -157,9 +157,9 @@ If any check fails, the job becomes stale and Pi falls back to synchronous compa
 
 ## ready-job replacement
 
-A pending background job sets Pi's adapter-scoped extension status to `<adapter label>: preparing`. When the job becomes ready, the extension attempts to apply it if Pi is idle and has no queued messages. If Pi is actively responding, abortable, has no queued messages, and current usage is over the async threshold, it aborts and triggers Pi compaction. Otherwise the job remains ready and Pi's extension status becomes `<adapter label>: ready`.
+A pending background job sets Pi's adapter-scoped extension status to `<adapter label>: preparing`. When the job becomes ready, the extension attempts to apply it if Pi is idle and has no queued messages. If Pi is actively responding, the job remains ready for the next continuing `turn_end` boundary (when usage is over the async threshold) or for `agent_settled`. Otherwise the job remains ready and Pi's extension status becomes `<adapter label>: ready`.
 
-A ready job triggers Pi compaction via `ctx.compact()` from a safe boundary (`agent_settled` or immediate background completion while already idle) or from an over-threshold abortable active turn. The active-turn path calls `ctx.abort()` first and records the job id for auto-resume. After `session_compact` confirms Pi persisted that same extension-provided compaction, the extension defers one macrotask and sends `continue` through Pi's public extension API. If compaction does not run immediately or the ready job remains around, it is kept while it still validates and its preview fits. If later turns make the ready summary too large to apply, or session/model/thinking/settings drift makes it unusable, a new `turn_end` crossing supersedes it and starts a replacement background job.
+A ready job triggers Pi compaction via `ctx.compact()` from a safe boundary (`agent_settled` or immediate background completion while already idle). During an over-threshold active turn, it is instead returned as a `turn_end` compaction draft appended after earlier handlers' drafts. Pi emits no `session_compact` or `compaction_end` event for that draft, so the extension records the proposal leaf and confirms a matching marker after that leaf at the next `turn_start`, `turn_end` or `agent_settled`; a missing entry records an apply failure. If compaction does not run immediately or the ready job remains around, it is kept while it still validates and its preview fits. If later turns make the ready summary too large to apply, or session/model/thinking/settings drift makes it unusable, a new `turn_end` crossing supersedes it and starts a replacement background job.
 
 Pending jobs are not replaced; `/async-compact-now` is a no-op while a job is pending. If Pi compacts while a job is pending, the job is staled with `sync_fallback` and Pi compacts synchronously. Automatic and manual jobs use `PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS`, which defaults to five minutes.
 
@@ -177,6 +177,7 @@ Possible reasons:
 - `thinking_changed`
 - `settings_changed`
 - `custom_instructions`
+- `context_edited`
 - `too_large`
 - `superseded`
 - `sync_fallback`
@@ -214,7 +215,7 @@ The extension is enabled by default; `PI_ASYNC_PREFIX_COMPACTION=0` disables it.
 - One job only: pending/ready jobs block new jobs until applied, failed, or staled.
 - Preparation mirrors Pi's internal `prepareCompaction()` because it is not exported yet; this should be replaced with the real exported function if Pi exposes it.
 - Automatic start requires a non-empty token window: `floor(contextWindow * START_RATIO) < tokens <= contextWindow - reserveTokens`.
-- Ready summaries usually wait for `ctx.isIdle()` and no pending queued messages; an abortable active turn over the async threshold is aborted and compacted like Pi's normal compaction path.
+- Ready summaries usually wait for `ctx.isIdle()` and no pending queued messages; an active turn over the async threshold applies them at a completed continuing `turn_end` boundary and is never aborted.
 - No metrics service, provider billing integration, or separate status command. Package authors can opt into synchronous structured lifecycle events through `registerAsyncCompaction(..., { onLifecycleEvent })`; see [the adapter guide](./docs/async-compaction-adapters.md#lifecycle-diagnostics).
 - `customInstructions` forces fallback to normal compaction.
 

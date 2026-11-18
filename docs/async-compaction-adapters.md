@@ -106,7 +106,7 @@ export default function myExtension(pi: ExtensionAPI): void {
 - timeout and abort handling
 - adapter-scoped status line: `<adapter label>: preparing` and `<adapter label>: ready`
 - adapter-scoped job IDs and marker ownership (`adapterId`, `jobId`, and `promptVersion`)
-- ready apply when idle, plus abort-and-compact with auto-resume for abortable active turns over the async threshold when no messages are queued
+- ready apply when idle, plus non-aborting `turn_end` draft apply for active turns over the async threshold at completed continuing boundaries
 - `session_before_compact` handoff
 - stale checks for session/model/settings/branch drift
 - preserving your `details` while adding `details.asyncPrefixCompaction`

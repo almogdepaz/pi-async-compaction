@@ -1,5 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, SessionBeforeCompactEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionBeforeCompactEvent, SessionEntry, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import asyncPrefixCompaction from "../src/index";
 import { createBuiltinPiCompactionAdapter } from "../src/adapter";
 import { BUILTIN_ADAPTER_ID, EXTENSION_NAME, SUMMARY_PROMPT_VERSION } from "../src/constants";
@@ -59,6 +59,23 @@ export function validationEvent(customInstructions?: string): SessionBeforeCompa
 			fileOps: { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() },
 			settings,
 		},
+	};
+}
+
+/** A final completed turn with no earlier boundary drafts, as stock Pi emits it. */
+export function turnEndEvent(overrides: Partial<TurnEndEvent> = {}): TurnEndEvent {
+	return {
+		type: "turn_end",
+		turnIndex: 0,
+		message: { role: "assistant", content: [], api: "openai-responses", provider: "openai", model: "test-model", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 0 },
+		toolResults: [],
+		messageEntryId: "a2",
+		toolResultEntryIds: [],
+		entries: [],
+		continue: false,
+		outcome: "completed",
+		context: { contextEntries: [], contextMessages: [], llmMessages: [], pendingMessages: [], canContinue: false },
+		...overrides,
 	};
 }
 

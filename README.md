@@ -10,13 +10,13 @@ Async context compaction for the Pi coding agent: keep long Pi coding sessions r
 pi install npm:pi-async-compaction
 ```
 
-Async compaction prepares Pi-compatible compaction summaries before you hit the limit, then applies a ready summary through Pi's normal compaction flow. If an abortable active turn is already over the async threshold, it aborts, compacts, then automatically sends `continue` once Pi persists the compaction.
+Async compaction prepares Pi-compatible compaction summaries before you hit the limit, then applies a ready summary through Pi's normal compaction flow. If an active turn is already over the async threshold, it hands the summary to Pi at the next completed turn boundary that continues, so the active model or tool work is never aborted and no `continue` message is sent.
 
 ## why install it
 
 - less waiting when context gets large
 - Pi-compatible summaries generated with Pi's exported compaction logic
-- safe idle apply, plus abort-and-compact with auto-resume when an active turn is already over the async threshold
+- safe idle apply, plus non-aborting apply at a continuing turn boundary when an active turn is already over the async threshold
 - status-line visibility while a background job is pending or ready
 - manual `/compact` and Pi's normal threshold/overflow compaction still work
 
@@ -27,7 +27,7 @@ Best for long coding sessions, repo audits, multi-file edits, and context-heavy 
 | normal Pi compaction | async compaction |
 | --- | --- |
 | waits to summarize when compaction is triggered | prepares the summary earlier in the background |
-| can land right before your next turn continues | usually applies at an idle boundary; over the async threshold it can abort, compact, and auto-resume |
+| can land right before your next turn continues | applies at an idle boundary, or over the async threshold at a completed continuing turn boundary, without aborting |
 | uses Pi's built-in compaction behavior | also uses Pi's built-in compaction behavior |
 | visible as a synchronous pause | visible as a quiet status-line job |
 
@@ -85,7 +85,7 @@ When the context crosses the async start window, the extension starts a backgrou
 status: built-in Pi compaction: preparing
 ```
 
-When the summary is ready but Pi is below the async threshold, not abortable, or has queued messages, it waits instead of interrupting the active turn:
+When the summary is ready while Pi is still working, it waits instead of interrupting the active turn:
 
 ```text
 status: built-in Pi compaction: ready
@@ -107,7 +107,7 @@ Async compaction precomputes summaries early, then applies them only at a safe b
 2. the background job reuses Pi's compaction preparation/generation behavior so the summary stays Pi-compatible
 3. on legacy patched hosts exposing a ready-summary checkpoint, a ready result can apply before queued steering or follow-up delivery without aborting; stock `1.0.0` does not expose that checkpoint
 4. if Pi is idle, the extension applies the ready summary through Pi's normal compaction flow
-5. if the checkpoint is unavailable or rejects the request, an abortable active turn over the async threshold retains the established abort-and-compact fallback
+5. if the checkpoint is unavailable or rejects the request, an active turn over the async threshold proposes the ready summary as a Pi `turn_end` compaction draft at the next completed, non-cancelled turn that continues with tool results, a follow-up or queued messages; Pi commits it before the next provider call, without aborting
 6. otherwise the ready summary is kept for a later safe boundary and Pi's status bar shows `<adapter label>: ready`
 7. Pi fires `session_before_compact`; if the ready async summary validates, the extension returns it
 8. otherwise Pi falls back to normal synchronous compaction
@@ -168,7 +168,7 @@ No. It preserves Pi's normal compaction behavior. Manual `/compact`, threshold c
 
 ### Does it interrupt active turns?
 
-Usually no. A ready summary waits for a safe idle boundary. On stock `1.0.0`, an abortable active turn already over the async threshold uses the established abort-and-compact fallback and automatically sends `continue` after Pi persists the compaction. The non-aborting ready-summary checkpoint belongs to legacy patched hosts, not this stock contract. Astra remote mode instead commits remote-window boundaries without generating summaries.
+No. A ready summary never aborts active model or tool work. On stock `1.0.0`, an active turn already over the async threshold receives the summary at the next completed turn boundary that continues; a final reply receives it after the agent settles. No `continue` message is sent. The ready-summary checkpoint for queued messages belongs to legacy patched hosts, not this stock contract. Astra remote mode instead commits remote-window boundaries without generating summaries.
 
 ### What should agents search for?
 
@@ -184,7 +184,7 @@ PI_ASYNC_PREFIX_COMPACTION_START_RATIO=0.5
 PI_ASYNC_PREFIX_COMPACTION_TIMEOUT_MS=300000
 ```
 
-The extension is enabled by default; set `PI_ASYNC_PREFIX_COMPACTION=0` to disable. Reserve and keep-recent tokens come from Pi's normal `compaction` settings. Automatic background jobs only start when `floor(contextWindow * START_RATIO) < tokens <= contextWindow - reserveTokens`; if that window is empty, use a larger context model, lower the start ratio, or lower Pi's reserve tokens. Pi's normal compaction threshold remains `contextWindow - reserveTokens`; the async start ratio controls both how early the background summary is prepared and when a ready summary may abort-and-compact an active turn.
+The extension is enabled by default; set `PI_ASYNC_PREFIX_COMPACTION=0` to disable. Reserve and keep-recent tokens come from Pi's normal `compaction` settings. Automatic background jobs only start when `floor(contextWindow * START_RATIO) < tokens <= contextWindow - reserveTokens`; if that window is empty, use a larger context model, lower the start ratio, or lower Pi's reserve tokens. Pi's normal compaction threshold remains `contextWindow - reserveTokens`; the async start ratio controls both how early the background summary is prepared and when a ready summary may apply at an active turn boundary.
 
 ## lifecycle diagnostics
 

@@ -20,6 +20,12 @@ export interface JobCorrelation {
 	readonly promptVersion: string;
 }
 
+/** A ready job handed to Pi as a turn_end compaction draft; Pi emits no session_compact event for it. */
+export interface BoundaryProposal extends JobCorrelation {
+	/** Branch leaf when the draft was proposed. Pi appends the draft after it, so older matching entries do not confirm it. */
+	readonly leafId: string | null;
+}
+
 export interface AsyncCompactionDetails {
 	readonly asyncPrefixCompaction: AsyncCompactionMarker;
 	readonly readFiles?: readonly string[];
@@ -73,6 +79,7 @@ export interface RuntimeState {
 	jobCounter: number;
 	applyInFlight: JobCorrelation | undefined;
 	lastHandedOff: JobCorrelation | undefined;
+	boundaryProposal: BoundaryProposal | undefined;
 	autoResumeAfterCompaction: JobCorrelation | undefined;
 	lifecycleObserver: AsyncCompactionLifecycleObserver | undefined;
 	lifecycleStartedAtMs: number | undefined;

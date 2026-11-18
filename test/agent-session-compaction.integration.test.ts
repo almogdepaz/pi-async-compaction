@@ -28,7 +28,7 @@ function deferred(): { readonly promise: Promise<void>; readonly resolve: () => 
 }
 
 test(
-	"applies ready work through a real AgentSession and resumes exactly once",
+	"applies work that becomes ready during an active stream after settlement without aborting or resuming",
 	async () => {
 		const id = randomUUID();
 		const cwd = process.cwd();
@@ -52,30 +52,21 @@ test(
 		const backgroundStarted = deferred();
 		const releaseBackground = deferred();
 		const activeCallStarted = deferred();
-		const activeCallAborted = deferred();
-		const resumedCallStarted = deferred();
+		const jobReady = deferred();
 		const lifecycleEvents: AsyncCompactionLifecycleEvent[] = [];
 		let backgroundCalls = 0;
 		let automaticStarts = 0;
-		let resumedProviderCalls = 0;
+		let activeCallAborted = false;
 		let successfulCompactions = 0;
 
 		provider.setResponses([
 			fauxAssistantMessage("initial response"),
 			async (_context, options) => {
 				activeCallStarted.resolve();
-				const signal = options?.signal;
-				if (!signal) throw new Error("active model call did not receive an abort signal");
-				if (!signal.aborted) {
-					await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-				}
-				activeCallAborted.resolve();
-				return fauxAssistantMessage("", { stopReason: "aborted" });
-			},
-			() => {
-				resumedProviderCalls++;
-				resumedCallStarted.resolve();
-				return fauxAssistantMessage("resumed response");
+				// The background job becomes ready while this stream is still open.
+				await jobReady.promise;
+				activeCallAborted = options?.signal?.aborted ?? false;
+				return fauxAssistantMessage("active response");
 			},
 		]);
 
@@ -134,7 +125,10 @@ test(
 						registerAsyncCompaction(
 							pi,
 							adapter,
-							{ commandName: false, onLifecycleEvent: (event) => lifecycleEvents.push(event) },
+							{ commandName: false, onLifecycleEvent: (event) => {
+								lifecycleEvents.push(event);
+								if (event.event === "ready") jobReady.resolve();
+							} },
 							injectedCoreDependencies,
 						);
 					},
@@ -161,33 +155,36 @@ test(
 			await session.prompt("initial request");
 			await backgroundStarted.promise;
 
-			const interruptedPrompt = session.prompt("active request").catch(() => undefined);
+			const activePrompt = session.prompt("active request");
 			await activeCallStarted.promise;
 			releaseBackground.resolve();
 
-			await activeCallAborted.promise;
-			await resumedCallStarted.promise;
+			await activePrompt;
 			await session.waitForIdle();
-			await interruptedPrompt;
 
 			const entries = sessionManager.getEntries();
 			const compactions = entries.filter((entry) => entry.type === "compaction");
 			const resumedUserMessages = session.messages.filter(
 				(message) => message.role === "user" && contentText(message.content) === AUTO_RESUME_PROMPT,
 			);
-			const resumedAssistantMessages = session.messages.filter(
-				(message) => message.role === "assistant" && contentText(message.content) === "resumed response",
+			const activeAssistantMessages = sessionManager.getBranch().filter(
+				(entry) =>
+					entry.type === "message" &&
+					entry.message.role === "assistant" &&
+					contentText(entry.message.content) === "active response",
 			);
 			const lifecycleNames: string[] = lifecycleEvents.map((event) => event.event);
 
-			expect(provider.state.callCount).toBe(3);
+			expect(activeCallAborted).toBe(false);
+			expect(provider.state.callCount).toBe(2);
 			expect(backgroundCalls).toBe(1);
 			expect(compactions).toHaveLength(1);
 			expect(compactions[0]?.fromHook).toBe(true);
 			expect(successfulCompactions).toBe(1);
-			expect(resumedUserMessages).toHaveLength(1);
-			expect(resumedProviderCalls).toBe(1);
-			expect(resumedAssistantMessages).toHaveLength(1);
+			expect(resumedUserMessages).toHaveLength(0);
+			expect(activeAssistantMessages).toHaveLength(1);
+			// The final turn has no continuing boundary, so the compaction follows the completed response.
+			expect(entries.at(-1)?.type).toBe("compaction");
 			expect(lifecycleNames.filter((event) => event === "handed_off")).toHaveLength(1);
 			expect(lifecycleNames.filter((event) => event === "failed")).toHaveLength(0);
 		} finally {

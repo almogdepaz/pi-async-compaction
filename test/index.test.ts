@@ -13,6 +13,7 @@ import {
 	recordFromUnknown,
 	textBlocksFromMessage,
 	timestamp,
+	turnEndEvent,
 	userEntry,
 	validationEvent,
 } from "./test-fixtures";
@@ -155,7 +156,7 @@ describe("extension hooks", () => {
 		if (!agentSettledHandler) throw new Error("agent_settled handler was not registered");
 
 		const entries = compactableEntries();
-		turnEndHandler({}, {
+		turnEndHandler(turnEndEvent(), {
 			...asyncJobContext(entries),
 			isIdle: () => false,
 			hasPendingMessages: () => false,
@@ -175,7 +176,7 @@ describe("extension hooks", () => {
 		expect(compactTriggered).toBe(1);
 	});
 
-	test("auto-resumes after a force-stopped async compaction is applied", async () => {
+	test("does not abort or auto-resume when a ready job meets an active final turn", async () => {
 		const deps = asyncJobDeps({ triggerCompaction: (jobCtx) => jobCtx.compact() });
 		const { handlers, notifyMessages, sentUserMessages, ctx } = extensionHarness({
 			applyReadyCompaction: (jobCtx, state) => applyReadyCompaction(jobCtx, state, deps),
@@ -192,7 +193,7 @@ describe("extension hooks", () => {
 		const entries = compactableEntries();
 		let abortCalls = 0;
 		let compactTriggered = 0;
-		turnEndHandler({}, {
+		turnEndHandler(turnEndEvent(), {
 			...asyncJobContext(entries),
 			isIdle: () => false,
 			hasPendingMessages: () => false,
@@ -201,8 +202,9 @@ describe("extension hooks", () => {
 			compact: () => compactTriggered++,
 		} as ExtensionContext);
 		await Promise.resolve();
-		expect(abortCalls).toBe(1);
-		expect(compactTriggered).toBe(1);
+		// A final turn has no continuing boundary, so the ready job waits for settlement instead of aborting.
+		expect(abortCalls).toBe(0);
+		expect(compactTriggered).toBe(0);
 
 		const handoff = await beforeCompactHandler(validationEvent(), {
 			...asyncJobContext(entries),
@@ -224,7 +226,7 @@ describe("extension hooks", () => {
 
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(notifyMessages).toEqual(["Applied ready built-in Pi compaction"]);
-		expect(sentUserMessages).toEqual(["continue"]);
+		expect(sentUserMessages).toEqual([]);
 	});
 
 	test("does not auto-resume when user input arrives before deferred resume", async () => {
@@ -240,7 +242,7 @@ describe("extension hooks", () => {
 		if (!turnEndHandler || !beforeCompactHandler || !compactHandler) throw new Error("expected lifecycle handlers");
 
 		const entries = compactableEntries();
-		turnEndHandler({}, {
+		turnEndHandler(turnEndEvent(), {
 			...asyncJobContext(entries),
 			isIdle: () => false,
 			hasPendingMessages: () => false,
@@ -288,7 +290,7 @@ describe("extension hooks", () => {
 		if (!agentSettledHandler) throw new Error("agent_settled handler was not registered");
 
 		const entries = compactableEntries();
-		turnEndHandler({}, {
+		turnEndHandler(turnEndEvent(), {
 			...asyncJobContext(entries),
 			isIdle: () => false,
 			hasPendingMessages: () => false,
@@ -317,7 +319,7 @@ describe("extension hooks", () => {
 		if (!beforeCompactHandler) throw new Error("session_before_compact handler was not registered");
 
 		const entries = compactableEntries();
-		turnEndHandler({}, asyncJobContext(entries));
+		turnEndHandler(turnEndEvent(), asyncJobContext(entries));
 		await Promise.resolve();
 
 		const handoff = await beforeCompactHandler(validationEvent(), {
@@ -341,7 +343,7 @@ describe("extension hooks", () => {
 		if (!beforeCompactHandler) throw new Error("session_before_compact handler was not registered");
 
 		const snapshotEntries = compactableEntries();
-		turnEndHandler({}, asyncJobContext(snapshotEntries));
+		turnEndHandler(turnEndEvent(), asyncJobContext(snapshotEntries));
 		await Promise.resolve();
 
 		const currentEntries = [

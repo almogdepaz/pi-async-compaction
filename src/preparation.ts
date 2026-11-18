@@ -2,7 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext, findCutPoint, getLatestCompactionEntry } from "@earendil-works/pi-coding-agent";
 import type { FileOperations, LocalCompactionPreparation, ResolvedCompactionSettings } from "./types";
-import { estimateContextUsageTokens, getAsyncCompactionMarker, getStringArrayProperty } from "./utils";
+import { estimateContextUsageTokens, getAsyncCompactionMarker, getStringArrayProperty, hasContextEdits } from "./utils";
 
 function createFileOps(): FileOperations {
 	return {
@@ -62,6 +62,7 @@ export function prepareAsyncCompaction(
 	pathEntries: readonly SessionEntry[],
 	settings: ResolvedCompactionSettings,
 ): LocalCompactionPreparation | undefined {
+	if (hasContextEdits(pathEntries)) return undefined;
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1]?.type === "compaction") {
 		return undefined;
 	}

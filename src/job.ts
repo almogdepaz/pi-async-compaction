@@ -1,6 +1,6 @@
 import type { Api, Model, ProviderHeaders, RetryPolicy } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { CompactionResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentActivityOutcome, CompactionEntryDraft, CompactionResult, ExtensionContext, ProjectedSessionEntry, SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
 import { compact } from "@earendil-works/pi-coding-agent";
 import { createBuiltinPiCompactionAdapter } from "./adapter";
 import type { AsyncCompactionAdapter } from "./adapter";
@@ -9,7 +9,7 @@ import { emitLifecycleEvent, getLifecycleDurationMs } from "./diagnostics";
 import { getAbortInvalidationReason, getStatusKey, markStale, nextJobId } from "./runtime-state";
 import type { AsyncCompactionDetails, JobCorrelation, LocalCompactionPreparation, ReadyJob, ResolvedCompactionSettings, RuntimeState, Snapshot } from "./types";
 import { getReadyJobContextInvalidationReason } from "./validation";
-import { getCompactionSettings, getRetrySettings, getStartRatio, getStartWindow, getTimeoutMs, isEnabled } from "./utils";
+import { getAsyncCompactionMarker, getCompactionSettings, getRetrySettings, getStartRatio, getStartWindow, getTimeoutMs, isEnabled, projectionHasContextEdits } from "./utils";
 
 function getReadyJobReplacementReason(
 	ready: ReadyJob,
@@ -31,8 +31,9 @@ function requestCompactionBeforeNextTurn(ctx: ExtensionContext): boolean {
 	return typeof request === "function" && request.call(ctx);
 }
 
-function shouldForceApplyReadyCompaction(ctx: ExtensionContext, deps: StartAsyncJobDependencies): boolean {
-	if (ctx.isIdle() || ctx.hasPendingMessages()) return false;
+function shouldApplyAtTurnBoundary(ctx: ExtensionContext, deps: StartAsyncJobDependencies): boolean {
+	// Queued messages do not block a boundary draft: Pi commits it before it sends them.
+	if (ctx.isIdle()) return false;
 	if (!ctx.signal || ctx.signal.aborted) return false;
 
 	const usage = ctx.getContextUsage();
@@ -170,20 +171,105 @@ export function applyReadyCompaction(
 		setCliStatus(deps, ctx, state, undefined);
 		return true;
 	}
-	if (!canApplyReadyCompaction(ctx) && !shouldForceApplyReadyCompaction(ctx, deps)) {
+	if (!canApplyReadyCompaction(ctx)) {
+		// Active work is never aborted to apply. An over-threshold run applies at its next continuing
+		// turn boundary (proposeBoundaryCompaction); otherwise the job applies once the run settles.
 		setCliStatus(deps, ctx, state, `${state.adapterLabel}: ready`);
 		return false;
 	}
 	const correlation = getJobCorrelation(state.ready);
-	const shouldAbortBeforeApply = !ctx.isIdle();
 	state.applyInFlight = correlation;
 	setCliStatus(deps, ctx, state, undefined);
-	if (shouldAbortBeforeApply) {
-		state.autoResumeAfterCompaction = correlation;
-		ctx.abort();
-	}
 	deps.triggerCompaction(ctx, (error) => recordApplyError(state, correlation, error));
 	return true;
+}
+
+/** Moves a validated ready job to the handed-off state that Pi's persistence confirms or fails. */
+export function handOffReadyJob(state: RuntimeState, ready: ReadyJob): JobCorrelation {
+	const correlation = getJobCorrelation(ready);
+	state.status = "idle";
+	state.ready = undefined;
+	state.reason = undefined;
+	state.applyInFlight = undefined;
+	state.lastHandedOff = correlation;
+	emitLifecycleEvent(state.lifecycleObserver, {
+		event: "handed_off",
+		adapterId: ready.adapterId,
+		jobId: ready.jobId,
+		durationMs: getLifecycleDurationMs(state.lifecycleStartedAtMs),
+	});
+	return correlation;
+}
+
+export interface TurnBoundary {
+	readonly outcome: AgentActivityOutcome;
+	/** True when Pi will make another provider request in this run without the extension asking for one. */
+	readonly continues: boolean;
+	/** Drafts that earlier turn_end handlers proposed; Pi commits them together with this one. */
+	readonly entries: readonly SessionBoundaryDraft[];
+	/** Pi's projection of the branch including those earlier drafts; the committed branch alone is not current. */
+	readonly contextEntries: readonly ProjectedSessionEntry[];
+}
+
+/**
+ * Hands an over-threshold ready job to Pi as a turn_end compaction draft. Pi appends it inside the active
+ * run before the next provider request, so the run is neither aborted nor resumed. Only completed boundaries
+ * that already continue are used; a final turn settles first and applies through `agent_settled`.
+ */
+export function proposeBoundaryCompaction(
+	ctx: ExtensionContext,
+	state: RuntimeState,
+	boundary: TurnBoundary,
+	deps: StartAsyncJobDependencies = defaultStartAsyncJobDependencies,
+): CompactionEntryDraft | undefined {
+	if (state.status !== "ready" || !state.ready || state.applyInFlight) return undefined;
+	// Pi commits drafts at every boundary outcome, so another compaction supersedes the snapshot even here.
+	if (boundary.entries.some((entry) => entry.type === "compaction")) {
+		markStale(state, InvalidationReason.SUPERSEDED);
+		setCliStatus(deps, ctx, state, undefined);
+		return undefined;
+	}
+	// Stock Pi reports a cancelled tool batch as a completed turn, so the run signal is checked as well.
+	if (boundary.outcome !== "completed" || ctx.signal?.aborted || !boundary.continues) return undefined;
+	const replacementReason = getReadyJobReplacementReason(state.ready, ctx, deps.getCompactionSettings(ctx))
+		?? (projectionHasContextEdits(boundary.contextEntries) ? InvalidationReason.CONTEXT_EDITED : undefined);
+	if (replacementReason) {
+		markStale(state, replacementReason);
+		setCliStatus(deps, ctx, state, undefined);
+		return undefined;
+	}
+	if (!shouldApplyAtTurnBoundary(ctx, deps)) return undefined;
+	const ready = state.ready;
+	const correlation = handOffReadyJob(state, ready);
+	state.boundaryProposal = { ...correlation, leafId: ctx.sessionManager.getLeafId() };
+	setCliStatus(deps, ctx, state, undefined);
+	return {
+		type: "compaction",
+		summary: ready.result.summary,
+		firstKeptEntryId: ready.result.firstKeptEntryId,
+		details: ready.result.details,
+	};
+}
+
+/**
+ * Resolves a proposed draft from the persisted branch at the next lifecycle event. Pi drops an invalid
+ * boundary proposal with only an extension error report, so absence is recorded as an apply failure.
+ */
+export function confirmBoundaryCompaction(ctx: ExtensionContext, state: RuntimeState): JobCorrelation | undefined {
+	const proposal = state.boundaryProposal;
+	if (!proposal) return undefined;
+	state.boundaryProposal = undefined;
+	const branch = ctx.sessionManager.getBranch();
+	const proposedAt = proposal.leafId === null ? -1 : branch.findIndex((entry) => entry.id === proposal.leafId);
+	const appended = proposal.leafId === null || proposedAt !== -1 ? branch.slice(proposedAt + 1) : [];
+	const persisted = appended.some((entry) => {
+		if (entry.type !== "compaction") return false;
+		const marker = getAsyncCompactionMarker(entry.details);
+		return marker !== undefined && matchesJobCorrelation(proposal, marker);
+	});
+	if (persisted) return getJobCorrelation(proposal);
+	recordApplyError(state, proposal, new Error("turn boundary compaction was not persisted"));
+	return undefined;
 }
 
 function setCliStatus(
@@ -195,7 +281,7 @@ function setCliStatus(
 	deps.setCliStatus(ctx, getStatusKey(state), text);
 }
 
-function getJobCorrelation(job: ReadyJob): JobCorrelation {
+function getJobCorrelation(job: JobCorrelation): JobCorrelation {
 	return {
 		adapterId: job.adapterId,
 		jobId: job.jobId,
@@ -221,6 +307,7 @@ export function recordApplyError(state: RuntimeState, correlation: JobCorrelatio
 	state.error = `apply failed: ${error.message}`;
 	state.applyInFlight = undefined;
 	state.lastHandedOff = undefined;
+	state.boundaryProposal = undefined;
 	state.autoResumeAfterCompaction = undefined;
 	state.lifecycleStartedAtMs = undefined;
 }
@@ -340,6 +427,7 @@ function markPending(state: RuntimeState, jobId: string, abortController: AbortC
 	state.error = undefined;
 	state.applyInFlight = undefined;
 	state.lastHandedOff = undefined;
+	state.boundaryProposal = undefined;
 	state.autoResumeAfterCompaction = undefined;
 	state.lifecycleStartedAtMs = Date.now();
 	emitLifecycleEvent(state.lifecycleObserver, {
