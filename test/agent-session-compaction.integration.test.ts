@@ -8,13 +8,68 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import asyncPrefixCompaction from "../src/index";
 import { createBuiltinPiCompactionAdapter } from "../src/adapter";
-import { AUTO_RESUME_PROMPT } from "../src/constants";
 import { registerAsyncCompaction, type AsyncCompactionCoreDependencies } from "../src/core";
 import type { AsyncCompactionLifecycleEvent } from "../src/diagnostics";
 import { applyReadyCompaction, startAsyncJobWithDeps } from "../src/job";
 
-const astraExtensionPath = process.env.ASTRA_EXTENSION_PATH;
+// Earlier releases resumed an aborted turn by sending this user message; it must never be sent now.
+const LEGACY_RESUME_PROMPT = "continue";
+
+test.each([null, { content: "replacement-only-input" }])(
+	"native synchronous fallback honors context edits (%j)",
+	async (replacement) => {
+		const cwd = process.cwd();
+		const agentDir = `/virtual/pi-fallback-${randomUUID()}`;
+		const settingsManager = SettingsManager.inMemory({
+			compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
+			retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 },
+		});
+		const sessionManager = SessionManager.inMemory(cwd);
+		const targetId = sessionManager.appendMessage({ role: "user", content: "omitted-original-input", timestamp: Date.now() });
+		sessionManager.appendMessage(fauxAssistantMessage("old response"));
+		sessionManager.appendMessage({ role: "user", content: "recent input", timestamp: Date.now() });
+		sessionManager.appendContextEdit(targetId, replacement);
+		const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+		const provider = fauxProvider({ provider: `fallback-${randomUUID()}` });
+		modelRuntime.registerNativeProvider(provider.provider);
+		let summaryInput = "";
+		let hookCalls = 0;
+		provider.setResponses([(context) => {
+			summaryInput = JSON.stringify(context.messages);
+			return fauxAssistantMessage("projected summary");
+		}]);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd, agentDir, settingsManager,
+			noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+			systemPrompt: "integration test", appendSystemPrompt: [],
+			extensionFactories: [{ name: "async-fallback", factory: (pi) => {
+				asyncPrefixCompaction(pi);
+				pi.on("session_before_compact", async () => { hookCalls++; });
+			} }],
+		});
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd, agentDir, settingsManager, sessionManager, resourceLoader, modelRuntime,
+			model: provider.getModel(), thinkingLevel: "off", noTools: "all",
+		});
+		try {
+			const result = await session.compact();
+			expect(result.summary).toBe("projected summary");
+			expect(hookCalls).toBe(1);
+			expect(provider.state.callCount).toBe(1);
+			expect(summaryInput).not.toContain("omitted-original-input");
+			if (replacement) expect(summaryInput).toContain("replacement-only-input");
+			const compactions = sessionManager.getEntries().filter((entry) => entry.type === "compaction");
+			expect(compactions).toHaveLength(1);
+			expect(compactions[0]?.fromHook).not.toBe(true);
+		} finally {
+			session.dispose();
+			modelRuntime.unregisterProvider(provider.provider.id);
+		}
+	},
+);
 
 function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
 	let resolvePromise: (() => void) | undefined;
@@ -115,7 +170,6 @@ test(
 			noPromptTemplates: true,
 			noThemes: true,
 			noContextFiles: true,
-			additionalExtensionPaths: astraExtensionPath ? [astraExtensionPath] : [],
 			systemPrompt: "integration test",
 			appendSystemPrompt: [],
 			extensionFactories: [
@@ -165,7 +219,7 @@ test(
 			const entries = sessionManager.getEntries();
 			const compactions = entries.filter((entry) => entry.type === "compaction");
 			const resumedUserMessages = session.messages.filter(
-				(message) => message.role === "user" && contentText(message.content) === AUTO_RESUME_PROMPT,
+				(message) => message.role === "user" && contentText(message.content) === LEGACY_RESUME_PROMPT,
 			);
 			const activeAssistantMessages = sessionManager.getBranch().filter(
 				(entry) =>

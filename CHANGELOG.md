@@ -1,36 +1,21 @@
 # changelog
 
-## 0.1.9-astra.4 — 2026-11-18
+## 0.1.10 — 2026-11-18
 
+- removed the Astra remote-context prerelease line and its patched-host checkpoint hook; `0.1.9-astra.*` versions are no longer maintained.
 - stopped aborting active model or tool work to apply a ready summary. over the async threshold, a ready job is now proposed as a stock Pi `turn_end` compaction draft at a completed, non-cancelled boundary that continues; final replies apply after `agent_settled`. no `continue` message is sent.
 - confirmed boundary drafts from the branch after the proposal leaf, because Pi emits no `session_compact` event for them; an unpersisted draft records an apply failure.
-- refused to prepare or apply summaries when the branch contains Pi context edits, because the summary could restore omitted raw content.
-- added exact `undici` `8.12.3` and `minimatch` `11.0.3` dependency overrides for the stock Pi `1.0.0` development host, resolving newly reported denial-of-service, certificate-validation and cache-poisoning advisories. the published package has no runtime dependencies.
+- removed the unused `continue` auto-resume path and its runtime state.
+- widened peer dependencies to `^1.3.0` so newer Pi 1.x releases are supported without a package update; CI also tests the newest Pi release. verified locally on Pi `1.4.0`, `1.5.0`, and `1.5.2`.
+- revalidated a boundary draft against Pi's boundary projection, so context edits or compaction drafts proposed at the same boundary fall back to synchronous compaction.
 
-## 0.1.9-astra.3 — 2026-10-03
+## 0.1.9 — 2026-11-09
 
-- targets stock Pi `1.0.0` through public provider, tool and session-boundary APIs; no host patch. earlier Astra tags retain their patched-host contract and legacy sessions are not migrated.
-- defaults Astra to summary compaction; `/astra remote` opts into durable remote windows with encrypted history/notes replay and native Codex OAuth.
-- falls back visibly to summary mode only for terminal typed HTTP `429`/`5xx` failures, disabling recovery tools before continuation without replaying failed mutations. cancellation and integrity/auth failures remain hard failures.
-- excludes the legacy host patch from the package; its repository artifact and unreachable legacy implementation remain pending separate cleanup. peers, development dependencies and CI target exact stock `1.0.0`, including real stock session/provider fixtures.
-- updates the `brace-expansion` dependency override to `5.0.12`, resolving the reported denial-of-service advisories.
-
-## 0.1.9-astra.2 — 2026-09-20
-
-- fixed Astra remote-window rollover to honor `PI_ASYNC_PREFIX_COMPACTION_START_RATIO`, using the shared 80% default when unset instead of always waiting for Pi's reserve-token threshold.
-- preserved safe deferred rollover for queued/tool continuations and added an awaited rollover before the next actual prompt after a final reply, without generating a summary or synthesizing a continuation.
-- surfaced unexpected trigger eligibility errors and added real-host regressions for configured boundaries, final replies and manual `new_context` non-duplication. The exact patched Pi `0.85.1` host contract is unchanged.
-
-## 0.1.9-astra.1 — 2026-09-15
-
-### Added
-
-- added deferred ready-summary handoff for the exact patched Pi `0.85.1` Astra host, applying a valid background result before queued steering or follow-up delivery without aborting the active turn.
-
-## 0.1.9-astra.0 — 2026-09-10
-
-- added experimental Astra remote-context support for the exact patched Pi `0.85.1` host contract. This prerelease must not be installed on unpatched or future hosts.
-- fixed the patched host's compaction cut point when oversized trailing tool results must remain with their assistant tool-call turn.
+- verified compatibility with Pi `1.3.0`, `1.4.0`, and `1.5.0`; limited peer dependencies and CI to those tested releases.
+- route background compaction through the session's native provider registry, including providers whose successful authentication does not return an API key or headers.
+- honor per-model compaction settings, exclude system messages from summaries, and preserve nested codemode file-operation metadata.
+- defer context-edited branches to Pi's synchronous compaction and invalidate summaries prepared before an edit.
+- this stable maintenance release does not include Astra prerelease features; the Astra channel remains separate.
 
 ## 0.1.8 — 2026-08-31
 

@@ -42,7 +42,7 @@ pi install npm:pi-async-compaction
 From git:
 
 ```bash
-pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.8
+pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.10
 ```
 
 Local development:
@@ -56,24 +56,6 @@ or test for one run:
 ```bash
 pi -e .
 ```
-
-## astra prerelease
-
-The `0.1.9-astra.4` prerelease targets **stock Pi `1.0.0`**, without a host patch. See [Astra modes, fallback policy and isolation limits](docs/astra-remote-context.md). Older `0.1.9-astra.0`–`.2` tags still require patched Pi `0.85.1`; do not migrate their protected sessions into this release.
-
-Use the stock `1.0.0` CLI and a fresh session directory:
-
-```bash
-PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.4" pi install npm:pi-async-compaction@0.1.9-astra.4
-```
-
-Or install the exact git tag:
-
-```bash
-PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.4" pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.9-astra.4
-```
-
-The npm `astra` channel selects this prerelease; stable `latest` and the normal tagged installation above remain `0.1.8`. Do not co-load the stable and prerelease compactor copies.
 
 ## demo
 
@@ -105,14 +87,15 @@ Async compaction precomputes summaries early, then applies them only at a safe b
 
 1. after a turn, if context usage crosses the async start threshold, a background summary starts
 2. the background job reuses Pi's compaction preparation/generation behavior so the summary stays Pi-compatible
-3. on legacy patched hosts exposing a ready-summary checkpoint, a ready result can apply before queued steering or follow-up delivery without aborting; stock `1.0.0` does not expose that checkpoint
-4. if Pi is idle, the extension applies the ready summary through Pi's normal compaction flow
-5. if the checkpoint is unavailable or rejects the request, an active turn over the async threshold proposes the ready summary as a Pi `turn_end` compaction draft at the next completed, non-cancelled turn that continues with tool results, a follow-up or queued messages; Pi commits it before the next provider call, without aborting
-6. otherwise the ready summary is kept for a later safe boundary and Pi's status bar shows `<adapter label>: ready`
-7. Pi fires `session_before_compact`; if the ready async summary validates, the extension returns it
-8. otherwise Pi falls back to normal synchronous compaction
+3. when the summary is ready, the extension applies it immediately if Pi is idle and has no queued messages
+4. if Pi is actively responding and still over the async threshold, the extension proposes the ready summary as a Pi `turn_end` compaction draft at the next completed, non-cancelled turn that continues with tool results, a follow-up or queued messages; Pi commits it before the next provider call, without aborting
+5. otherwise the ready summary is kept for later and Pi's status bar shows `<adapter label>: ready`; at Pi's next `agent_settled` event, the extension applies it if no messages are queued
+6. Pi fires `session_before_compact`; if the ready async summary validates, the extension returns it
+7. otherwise Pi falls back to normal synchronous compaction
 
 Manual `/compact` and Pi's normal threshold/overflow compaction can also use a ready async summary.
+
+Branches with active context edits use Pi's normal synchronous compaction. A context edit also invalidates any previously prepared summary, so omitted or replaced raw content cannot be applied from that summary. Async preparation resumes after compaction moves past those edits.
 
 Manual trigger, bypassing the early-start threshold:
 
@@ -168,7 +151,7 @@ No. It preserves Pi's normal compaction behavior. Manual `/compact`, threshold c
 
 ### Does it interrupt active turns?
 
-No. A ready summary never aborts active model or tool work. On stock `1.0.0`, an active turn already over the async threshold receives the summary at the next completed turn boundary that continues; a final reply receives it after the agent settles. No `continue` message is sent. The ready-summary checkpoint for queued messages belongs to legacy patched hosts, not this stock contract. Astra remote mode instead commits remote-window boundaries without generating summaries.
+No. A ready summary never aborts active model or tool work. An active turn already over the async threshold receives the summary at the next completed turn boundary that continues; a final reply receives it after the agent settles. No `continue` message is sent.
 
 ### What should agents search for?
 
@@ -219,7 +202,7 @@ bun run check
 bun pm pack --dry-run
 ```
 
-Published `0.1.8` was tested against Pi `0.84.3` and `0.84.4`, with peer range `>=0.84.3 <0.85.0`. The `0.1.9-astra.4` prerelease pins stock Pi `1.0.0` peers, development dependencies and lockfile. CI validates that exact host and sets `PI_ASTRA_HOST_NODE_MODULES` to its installed `node_modules`, exercising stock integration tests instead of silently skipping them. For local stock integration verification, set that variable to an absolute path to stock `1.0.0` dependencies; without it, those tests skip. These fixtures use synthetic credentials and isolated transport responses, not live backend entitlement checks. Do not co-load the published and prerelease compactor copies in one Pi runtime.
+This package supports Pi 1.x from `1.3.0` (peers `^1.3.0`); Pi provides the core packages at runtime. CI tests Pi `1.3.0`, `1.4.0`, `1.5.0`, and the newest Pi release. Older Pi `0.84.3`–`0.84.4` hosts should keep `pi-async-compaction@0.1.8`.
 
 ## changelog
 

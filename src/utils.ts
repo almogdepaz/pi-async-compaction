@@ -90,7 +90,7 @@ export function getAsyncCompactionMarker(value: unknown): AsyncCompactionMarker 
 }
 
 export function getCompactionSettings(ctx: ExtensionContext): ResolvedCompactionSettings {
-	return SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() }).getCompactionSettings();
+	return SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() }).getCompactionSettings(ctx.model);
 }
 
 export function getRetrySettings(ctx: ExtensionContext): RetryPolicy {

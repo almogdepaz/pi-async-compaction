@@ -31,12 +31,8 @@ export function expectAsyncPreparationToMatchPi(
 	}
 
 	expect(asyncPreparation.firstKeptEntryId).toBe(piPreparation.firstKeptEntryId);
-	expect(asyncPreparation.messagesToSummarize.map((message) => message.role)).toEqual(
-		piPreparation.messagesToSummarize.map((message) => message.role),
-	);
-	expect(asyncPreparation.turnPrefixMessages.map((message) => message.role)).toEqual(
-		piPreparation.turnPrefixMessages.map((message) => message.role),
-	);
+	expect(asyncPreparation.messagesToSummarize).toEqual(piPreparation.messagesToSummarize);
+	expect(asyncPreparation.turnPrefixMessages).toEqual(piPreparation.turnPrefixMessages);
 	expect(asyncPreparation.isSplitTurn).toBe(piPreparation.isSplitTurn);
 	expect(asyncPreparation.tokensBefore).toBe(piPreparation.tokensBefore);
 	expect(asyncPreparation.previousSummary).toBe(piPreparation.previousSummary);

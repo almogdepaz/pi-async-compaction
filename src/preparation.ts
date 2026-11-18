@@ -13,13 +13,14 @@ function createFileOps(): FileOperations {
 }
 
 function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOperations): void {
-	if (message.role !== "assistant") return;
-	for (const block of message.content) {
-		if (block.type !== "toolCall") continue;
-		const path = typeof block.arguments.path === "string" ? block.arguments.path : undefined;
+	const calls = message.role === "toolResult"
+		? message.nestedCalls?.calls ?? []
+		: message.role === "assistant" ? message.content.filter((block) => block.type === "toolCall") : [];
+	for (const call of calls) {
+		const path = typeof call.arguments?.path === "string" ? call.arguments.path : undefined;
 		if (!path) continue;
 
-		switch (block.name) {
+		switch (call.name) {
 			case "read":
 				fileOps.read.add(path);
 				break;
@@ -35,7 +36,7 @@ function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOperation
 
 function entryToMessage(entry: SessionEntry): AgentMessage | undefined {
 	if (entry.type === "message") {
-		return entry.message;
+		return entry.message.role === "system" ? undefined : entry.message;
 	}
 	if (entry.type === "custom_message") {
 		return {

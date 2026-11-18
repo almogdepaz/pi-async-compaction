@@ -162,13 +162,10 @@ describe("startAsyncJob lifecycle", () => {
 		expect(compactArguments?.[3]).toEqual({ Authorization: "Bearer ambient-token" });
 	});
 
-	test("rejects resolved requests without an API key or usable headers", async () => {
-		expect(
-			buildWithAuth({
-				ok: true,
-				headers: { Authorization: null },
-			}),
-		).rejects.toThrow("No API key or headers for openai");
+	test("accepts successful native auth without an API key or usable headers", async () => {
+		const { compactArguments } = await buildWithAuth({ ok: true, headers: { Authorization: null } });
+		expect(compactArguments?.[2]).toBeUndefined();
+		expect(compactArguments?.[7]).toBeFunction();
 	});
 
 	test("sets cli status line while a background job is pending", () => {
@@ -304,107 +301,6 @@ describe("startAsyncJob lifecycle", () => {
 		expect(compactTriggered).toBe(0);
 	});
 
-	test("requests deferred compaction before force-stopping an active ready job", () => {
-		const state = createRuntimeState();
-		state.status = "ready";
-		state.jobId = builtinJobId;
-		state.jobCounter = 1;
-		state.ready = {
-			...readyJob({ snapshotLeafId: "u2" }),
-			jobId: builtinJobId,
-			snapshotLeafId: "u2",
-		};
-		let requestCount = 0;
-		let abortCalls = 0;
-		let compactTriggered = 0;
-
-		const applied = applyReadyCompaction(
-			{
-				...asyncJobContext(compactableEntries()),
-				isIdle: () => false,
-				hasPendingMessages: () => false,
-				signal: new AbortController().signal,
-				abort: () => abortCalls++,
-				requestCompactionBeforeNextTurn: () => {
-					requestCount++;
-					return true;
-				},
-			} as unknown as ExtensionContext,
-			state,
-			asyncJobDeps({ triggerCompaction: () => compactTriggered++ }),
-		);
-
-		expect(applied).toBe(true);
-		expect(requestCount).toBe(1);
-		expect(abortCalls).toBe(0);
-		expect(compactTriggered).toBe(0);
-		expect(state.applyInFlight).toBeUndefined();
-	});
-
-	test("retries deferred scheduling when an automatic start reuses a ready job", () => {
-		const state = createRuntimeState();
-		state.status = "ready";
-		state.jobId = builtinJobId;
-		state.jobCounter = 1;
-		state.ready = {
-			...readyJob({ snapshotLeafId: "u2" }),
-			jobId: builtinJobId,
-			snapshotLeafId: "u2",
-		};
-		let requestCount = 0;
-
-		const outcome = startAsyncJobWithDeps(
-			{
-				...asyncJobContext(compactableEntries()),
-				isIdle: () => false,
-				hasPendingMessages: () => false,
-				requestCompactionBeforeNextTurn: () => {
-					requestCount++;
-					return true;
-				},
-			} as unknown as ExtensionContext,
-			state,
-			asyncJobDeps(),
-		);
-
-		expect(outcome).toBe("ready_reused");
-		expect(requestCount).toBe(1);
-		expect(state.applyInFlight).toBeUndefined();
-	});
-
-	test("keeps an active ready job ready when deferred compaction is rejected", () => {
-		const state = createRuntimeState();
-		state.status = "ready";
-		state.jobId = builtinJobId;
-		state.jobCounter = 1;
-		state.ready = {
-			...readyJob({ snapshotLeafId: "u2" }),
-			jobId: builtinJobId,
-			snapshotLeafId: "u2",
-		};
-		let abortCalls = 0;
-		let compactTriggered = 0;
-
-		const applied = applyReadyCompaction(
-			{
-				...asyncJobContext(compactableEntries()),
-				isIdle: () => false,
-				hasPendingMessages: () => false,
-				signal: new AbortController().signal,
-				abort: () => abortCalls++,
-				requestCompactionBeforeNextTurn: () => false,
-			} as unknown as ExtensionContext,
-			state,
-			asyncJobDeps({ triggerCompaction: () => compactTriggered++ }),
-		);
-
-		expect(applied).toBe(false);
-		expect(abortCalls).toBe(0);
-		expect(compactTriggered).toBe(0);
-		expect(state.status).toBe("ready");
-		expect(state.applyInFlight).toBeUndefined();
-	});
-
 	test("does not abort the active agent to apply a ready job over the async threshold", () => {
 		const state = createRuntimeState();
 		state.status = "ready";
@@ -436,7 +332,6 @@ describe("startAsyncJob lifecycle", () => {
 		expect(abortCalls).toBe(0);
 		expect(compactTriggered).toBe(0);
 		expect(state.status).toBe("ready");
-		expect(state.autoResumeAfterCompaction).toBeUndefined();
 	});
 
 	test("claims a ready job before triggering Pi compaction", () => {

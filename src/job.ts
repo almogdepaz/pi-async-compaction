@@ -23,14 +23,6 @@ function canApplyReadyCompaction(ctx: ExtensionContext): boolean {
 	return ctx.isIdle() && !ctx.hasPendingMessages();
 }
 
-function requestCompactionBeforeNextTurn(ctx: ExtensionContext): boolean {
-	const deferredContext = ctx as ExtensionContext & {
-		requestCompactionBeforeNextTurn?: () => boolean;
-	};
-	const request = deferredContext.requestCompactionBeforeNextTurn;
-	return typeof request === "function" && request.call(ctx);
-}
-
 function shouldApplyAtTurnBoundary(ctx: ExtensionContext, deps: StartAsyncJobDependencies): boolean {
 	// Queued messages do not block a boundary draft: Pi commits it before it sends them.
 	if (ctx.isIdle()) return false;
@@ -65,9 +57,6 @@ export async function buildAsyncCompactionResult(
 		throw new Error(auth.error);
 	}
 	const requestHeaders = normalizeProviderHeaders(auth.headers);
-	if (!auth.apiKey && !requestHeaders) {
-		throw new Error(`No API key or headers for ${model.provider}`);
-	}
 	const requestModel = auth.baseUrl || auth.headers
 		? { ...model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}), headers: requestHeaders }
 		: model;
@@ -82,7 +71,7 @@ export async function buildAsyncCompactionResult(
 		undefined,
 		signal,
 		thinkingLevel,
-		undefined,
+		(requestModel, context, options) => ctx.modelRegistry.streamSimple(requestModel, context, options),
 		auth.env,
 		getRetrySettingsFn(ctx),
 	);
@@ -166,10 +155,6 @@ export function applyReadyCompaction(
 		markStale(state, replacementReason);
 		setCliStatus(deps, ctx, state, undefined);
 		return false;
-	}
-	if (requestCompactionBeforeNextTurn(ctx)) {
-		setCliStatus(deps, ctx, state, undefined);
-		return true;
 	}
 	if (!canApplyReadyCompaction(ctx)) {
 		// Active work is never aborted to apply. An over-threshold run applies at its next continuing
@@ -308,7 +293,6 @@ export function recordApplyError(state: RuntimeState, correlation: JobCorrelatio
 	state.applyInFlight = undefined;
 	state.lastHandedOff = undefined;
 	state.boundaryProposal = undefined;
-	state.autoResumeAfterCompaction = undefined;
 	state.lifecycleStartedAtMs = undefined;
 }
 
@@ -428,7 +412,6 @@ function markPending(state: RuntimeState, jobId: string, abortController: AbortC
 	state.applyInFlight = undefined;
 	state.lastHandedOff = undefined;
 	state.boundaryProposal = undefined;
-	state.autoResumeAfterCompaction = undefined;
 	state.lifecycleStartedAtMs = Date.now();
 	emitLifecycleEvent(state.lifecycleObserver, {
 		event: "started",
@@ -464,7 +447,7 @@ export function startAsyncJobWithDeps(
 		? getReadyJobReplacementReason(state.ready, ctx, settings)
 		: InvalidationReason.SUPERSEDED;
 	if (state.status === "ready" && state.ready && !readyReplacementReason) {
-		applyReadyCompaction(ctx, state, deps);
+		if (options.force) applyReadyCompaction(ctx, state, deps);
 		return "ready_reused";
 	}
 	if (state.status === "ready") {

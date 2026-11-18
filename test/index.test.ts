@@ -229,53 +229,6 @@ describe("extension hooks", () => {
 		expect(sentUserMessages).toEqual([]);
 	});
 
-	test("does not auto-resume when user input arrives before deferred resume", async () => {
-		const deps = asyncJobDeps({ triggerCompaction: (jobCtx) => jobCtx.compact() });
-		const { handlers, sentUserMessages, ctx } = extensionHarness({
-			applyReadyCompaction: (jobCtx, state) => applyReadyCompaction(jobCtx, state, deps),
-			startAsyncJob: (jobCtx, state, options) =>
-				startAsyncJobWithDeps(jobCtx, state, deps, { ...(options ?? { force: false }), adapter: undefined }),
-		});
-		const turnEndHandler = handlers.get("turn_end");
-		const beforeCompactHandler = handlers.get("session_before_compact");
-		const compactHandler = handlers.get("session_compact");
-		if (!turnEndHandler || !beforeCompactHandler || !compactHandler) throw new Error("expected lifecycle handlers");
-
-		const entries = compactableEntries();
-		turnEndHandler(turnEndEvent(), {
-			...asyncJobContext(entries),
-			isIdle: () => false,
-			hasPendingMessages: () => false,
-			signal: new AbortController().signal,
-			abort: () => undefined,
-			compact: () => undefined,
-		} as ExtensionContext);
-		await Promise.resolve();
-
-		const handoff = await beforeCompactHandler(validationEvent(), {
-			...asyncJobContext(entries),
-			hasUI: true,
-			ui: ctx.ui,
-		} as ExtensionContext);
-		if (!handoff || typeof handoff !== "object" || !("compaction" in handoff)) {
-			throw new Error("expected async compaction handoff");
-		}
-		const compaction = (handoff as { readonly compaction: CompactionResult }).compaction;
-		let pendingMessages = false;
-
-		compactHandler(
-			{
-				fromExtension: true,
-				compactionEntry: { details: compaction.details },
-			},
-			{ ...ctx, hasPendingMessages: () => pendingMessages } as ExtensionContext,
-		);
-		pendingMessages = true;
-
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(sentUserMessages).toEqual([]);
-	});
-
 	test("defers ready async compaction at agent settlement when queued messages are pending", async () => {
 		let compactTriggered = 0;
 		const deps = asyncJobDeps({ triggerCompaction: (jobCtx) => jobCtx.compact() });

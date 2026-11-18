@@ -12,10 +12,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createBuiltinPiCompactionAdapter } from "../src/adapter";
-import { AUTO_RESUME_PROMPT } from "../src/constants";
 import { registerAsyncCompaction, type AsyncCompactionCoreDependencies } from "../src/core";
 import type { AsyncCompactionLifecycleEvent } from "../src/diagnostics";
 import { applyReadyCompaction, proposeBoundaryCompaction, startAsyncJobWithDeps } from "../src/job";
+
+// Earlier releases resumed an aborted turn by sending this user message; it must never be sent now.
+const LEGACY_RESUME_PROMPT = "continue";
 
 function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
 	let resolvePromise: (() => void) | undefined;
@@ -233,7 +235,7 @@ async function runBoundaryApply(scenario: Scenario, options: BoundaryApplyOption
 			compactions: sessionManager.getEntries().filter((entry) => entry.type === "compaction"),
 			branchTypes: branch.map((entry) => entry.type === "message" ? `${entry.type}:${entry.message.role}` : entry.type),
 			autoResumePrompts: session.messages.filter(
-				(message) => message.role === "user" && contentText(message.content) === AUTO_RESUME_PROMPT,
+				(message) => message.role === "user" && contentText(message.content) === LEGACY_RESUME_PROMPT,
 			).length,
 			finalResponses: session.messages.filter(
 				(message) => message.role === "assistant" && contentText(message.content) === "final response",

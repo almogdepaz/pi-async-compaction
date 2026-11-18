@@ -80,7 +80,6 @@ export interface RuntimeState {
 	applyInFlight: JobCorrelation | undefined;
 	lastHandedOff: JobCorrelation | undefined;
 	boundaryProposal: BoundaryProposal | undefined;
-	autoResumeAfterCompaction: JobCorrelation | undefined;
 	lifecycleObserver: AsyncCompactionLifecycleObserver | undefined;
 	lifecycleStartedAtMs: number | undefined;
 }

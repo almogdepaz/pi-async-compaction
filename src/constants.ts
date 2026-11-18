@@ -4,7 +4,6 @@ export const BUILTIN_ADAPTER_LABEL = "built-in Pi compaction";
 export const SUMMARY_PROMPT_VERSION = "pi-compact-background-v1";
 export const DEFAULT_START_RATIO = 0.8;
 export const DEFAULT_TIMEOUT_MS = 300_000;
-export const AUTO_RESUME_PROMPT = "continue";
 
 export const InvalidationReason = {
 	FIRST_KEPT_MISSING: "first_kept_missing",

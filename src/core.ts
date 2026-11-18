@@ -1,13 +1,12 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AsyncCompactionAdapter } from "./adapter";
-import { AUTO_RESUME_PROMPT, InvalidationReason } from "./constants";
+import { InvalidationReason } from "./constants";
 import { applyReadyCompaction, confirmBoundaryCompaction, handOffReadyJob, proposeBoundaryCompaction, recordApplyError, startAsyncJob } from "./job";
 import type { StartAsyncJobOutcome } from "./job";
 import { createRuntimeState, getStatusKey, markStale } from "./runtime-state";
 import type { AsyncCompactionMarker, JobCorrelation, RuntimeState } from "./types";
 import { getAsyncCompactionMarker } from "./utils";
 import { validateReadyJob } from "./validation";
-import { isAstraRemoteMode, isAstraRemoteModel } from "./astra/activation";
 
 export type {
 	AdapterCompactionInput,
@@ -111,8 +110,6 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 	validateAdapterRegistration(pi, jobAdapter);
 	const deps = { ...defaultCoreDependencies, ...injectedDeps };
 	const state = createRuntimeState(adapter.id, adapter.label, options.onLifecycleEvent);
-	const isRemoteContextSession = (ctx: ExtensionContext): boolean =>
-		isAstraRemoteModel(ctx.model) && isAstraRemoteMode(ctx.sessionManager.getEntries());
 
 	const completeHandOff = (ctx: ExtensionContext): void => {
 		state.lastHandedOff = undefined;
@@ -134,10 +131,6 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 
 	pi.on("turn_end", (event, ctx) => {
 		resolveBoundaryProposal(ctx);
-		if (isRemoteContextSession(ctx)) {
-			invalidateActiveJob(ctx, state, InvalidationReason.SYNC_FALLBACK);
-			return undefined;
-		}
 		const draft = deps.proposeBoundaryCompaction(ctx, state, {
 			outcome: event.outcome,
 			continues: event.toolResults.length > 0 || event.continue || ctx.hasPendingMessages(),
@@ -156,7 +149,7 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 
 	pi.on("agent_settled", (_event, ctx) => {
 		resolveBoundaryProposal(ctx);
-		if (!isRemoteContextSession(ctx) && !ctx.hasPendingMessages()) deps.applyReadyCompaction(ctx, state);
+		if (!ctx.hasPendingMessages()) deps.applyReadyCompaction(ctx, state);
 	});
 
 	pi.on("model_select", (_event, ctx) => {
@@ -172,10 +165,6 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
-		if (isRemoteContextSession(ctx)) {
-			invalidateActiveJob(ctx, state, InvalidationReason.SYNC_FALLBACK);
-			return undefined;
-		}
 		const ready = state.ready;
 		if (!ready || state.status !== "ready") {
 			if (state.status === "pending") {
@@ -204,14 +193,7 @@ export function registerAsyncCompaction<TPrepared, TResult>(
 
 		const correlation = getJobCorrelation(marker);
 		if (!matchesJobCorrelation(state.lastHandedOff, correlation)) return;
-		const shouldAutoResume = matchesJobCorrelation(state.autoResumeAfterCompaction, correlation);
-		if (shouldAutoResume) state.autoResumeAfterCompaction = undefined;
 		completeHandOff(ctx);
-		if (shouldAutoResume) {
-			setTimeout(() => {
-				if (!ctx.hasPendingMessages()) pi.sendUserMessage(AUTO_RESUME_PROMPT);
-			}, 0);
-		}
 	});
 
 	pi.on("session_compact_failed", (event) => {
