@@ -59,18 +59,18 @@ pi -e .
 
 ## astra prerelease
 
-The `0.1.9-astra.3` prerelease targets **stock Pi `1.0.0`**, without a host patch. See [Astra modes, fallback policy and isolation limits](docs/astra-remote-context.md). Older `0.1.9-astra.0`–`.2` tags still require patched Pi `0.85.1`; do not migrate their protected sessions into this release.
+The `0.1.9-astra.4` prerelease targets **stock Pi `1.0.0`**, without a host patch. See [Astra modes, fallback policy and isolation limits](docs/astra-remote-context.md). Older `0.1.9-astra.0`–`.2` tags still require patched Pi `0.85.1`; do not migrate their protected sessions into this release.
 
 Use the stock `1.0.0` CLI and a fresh session directory:
 
 ```bash
-PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.3" pi install npm:pi-async-compaction@0.1.9-astra.3
+PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.4" pi install npm:pi-async-compaction@0.1.9-astra.4
 ```
 
 Or install the exact git tag:
 
 ```bash
-PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.3" pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.9-astra.3
+PI_CODING_AGENT_DIR="$HOME/.pi/astra-0.1.9-astra.4" pi install git:github.com/almogdepaz/pi-async-compaction@v0.1.9-astra.4
 ```
 
 The npm `astra` channel selects this prerelease; stable `latest` and the normal tagged installation above remain `0.1.8`. Do not co-load the stable and prerelease compactor copies.
@@ -219,7 +219,7 @@ bun run check
 bun pm pack --dry-run
 ```
 
-Published `0.1.8` was tested against Pi `0.84.3` and `0.84.4`, with peer range `>=0.84.3 <0.85.0`. The `0.1.9-astra.3` prerelease pins stock Pi `1.0.0` peers, development dependencies and lockfile. CI validates that exact host and sets `PI_ASTRA_HOST_NODE_MODULES` to its installed `node_modules`, exercising stock integration tests instead of silently skipping them. For local stock integration verification, set that variable to an absolute path to stock `1.0.0` dependencies; without it, those tests skip. These fixtures use synthetic credentials and isolated transport responses, not live backend entitlement checks. Do not co-load the published and prerelease compactor copies in one Pi runtime.
+Published `0.1.8` was tested against Pi `0.84.3` and `0.84.4`, with peer range `>=0.84.3 <0.85.0`. The `0.1.9-astra.4` prerelease pins stock Pi `1.0.0` peers, development dependencies and lockfile. CI validates that exact host and sets `PI_ASTRA_HOST_NODE_MODULES` to its installed `node_modules`, exercising stock integration tests instead of silently skipping them. For local stock integration verification, set that variable to an absolute path to stock `1.0.0` dependencies; without it, those tests skip. These fixtures use synthetic credentials and isolated transport responses, not live backend entitlement checks. Do not co-load the published and prerelease compactor copies in one Pi runtime.
 
 ## changelog
 

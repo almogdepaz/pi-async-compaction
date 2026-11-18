@@ -9,7 +9,7 @@ const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf
 const astraDocs = readFileSync(new URL("../docs/astra-remote-context.md", import.meta.url), "utf8");
 
 test("stock Astra uses a distinct release identity with consistent installation documentation", () => {
-	expect(manifest.version).not.toBe("0.1.9-astra.2");
+	expect(manifest.version).not.toBe("0.1.9-astra.3");
 	expect(readme).toContain(manifest.version);
 	expect(astraDocs).toContain(manifest.version);
 	expect(checkReleaseConsistency({ version: manifest.version, tagsAtHead: execFileSync("git", ["tag", "--points-at", "HEAD"], { cwd: new URL("..", import.meta.url), encoding: "utf8" }).trim().split("\n"), changelog, readme })).toEqual([]);

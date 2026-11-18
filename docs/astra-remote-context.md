@@ -2,7 +2,7 @@
 
 ## stock pi 1.0.0
 
-the `0.1.9-astra.3` prerelease targets stock pi `1.0.0`; it does not patch pi, `node_modules`, auth storage, or the native transport. it composes the public `openai-codex` provider under the same id, so pi retains its normal Codex OAuth credential, catalog, and native stream implementations.
+the `0.1.9-astra.4` prerelease targets stock pi `1.0.0`; it does not patch pi, `node_modules`, auth storage, or the native transport. it composes the public `openai-codex` provider under the same id, so pi retains its normal Codex OAuth credential, catalog, and native stream implementations.
 
 select `openai-codex/gpt-6-astra`. Astra starts in **summary** mode by default: normal Pi/background async summary compaction continues unchanged. Set `PI_ASTRA_COMPACTION_MODE=remote` before starting a new session to default Astra to remote mode; set it to `summary` or leave it unset for summary mode. Any other nonempty value is rejected.
 

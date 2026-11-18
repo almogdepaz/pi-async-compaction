@@ -1,6 +1,6 @@
 # changelog
 
-## unreleased
+## 0.1.9-astra.4 — 2026-11-18
 
 - stopped aborting active model or tool work to apply a ready summary. over the async threshold, a ready job is now proposed as a stock Pi `turn_end` compaction draft at a completed, non-cancelled boundary that continues; final replies apply after `agent_settled`. no `continue` message is sent.
 - confirmed boundary drafts from the branch after the proposal leaf, because Pi emits no `session_compact` event for them; an unpersisted draft records an apply failure.
